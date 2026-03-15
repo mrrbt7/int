@@ -4,15 +4,45 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
-<meta name="apple-mobile-web-app-status-bar-style" content="black"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
 <meta name="mobile-web-app-capable" content="yes"/>
 <meta name="theme-color" content="#000000"/>
-<title>SPRINT v2.1</title>
+<meta name="apple-mobile-web-app-title" content="SPRINT"/>
+<title>SPRINT v2.3</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <style>
+/*
+╔══════════════════════════════════════════════════════════════╗
+║                  SPRINT v2.3 — SQL MIGRATIONS               ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║  -- Run once (v2.1 column if not yet added)                  ║
+║  alter table sprints_v2                                      ║
+║    add column if not exists scheduled_time time;             ║
+║                                                              ║
+║  -- Sprint run history table (new in v2.3)                   ║
+║  create table if not exists sprint_runs (                    ║
+║    id uuid primary key default gen_random_uuid(),            ║
+║    user_id uuid references auth.users(id)                    ║
+║      on delete cascade not null,                             ║
+║    sprint_id uuid,                                           ║
+║    sprint_name text not null,                                ║
+║    sprint_emoji text default '⚡',                           ║
+║    task_count int default 0,                                 ║
+║    planned_secs int default 0,                               ║
+║    elapsed_secs int default 0,                               ║
+║    completed_at timestamptz default now()                    ║
+║  );                                                          ║
+║  alter table sprint_runs enable row level security;          ║
+║  create policy "own sprint_runs" on sprint_runs              ║
+║    for all using (auth.uid() = user_id)                      ║
+║    with check (auth.uid() = user_id);                        ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+*/
 *{box-sizing:border-box;margin:0;padding:0}
 html,body,#root{height:100%;background:#000;color:#e8e8e8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
 input,textarea,select{font-size:16px!important;color-scheme:dark}
@@ -25,9 +55,60 @@ input,textarea,select{font-size:16px!important;color-scheme:dark}
 .pulse{animation:pulse 1s ease-in-out infinite}
 @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 .fade-in{animation:fadeIn .2s ease-out}
+@keyframes slideDown{from{opacity:0;max-height:0}to{opacity:1;max-height:300px}}
+.slide-down{animation:slideDown .25s ease-out}
+.drag-active{opacity:0.4;transform:scale(0.98)}
+.drag-over{border-top:2px solid #CAFF4C!important}
 </style>
 </head>
 <body>
+<!-- PWA Setup (runs before React) -->
+<script>
+(function(){
+  // Generate icon via canvas
+  try{
+    const c=document.createElement('canvas');c.width=512;c.height=512;
+    const ctx=c.getContext('2d');
+    ctx.fillStyle='#000';ctx.fillRect(0,0,512,512);
+    // Rounded rect background
+    ctx.fillStyle='#CAFF4C';
+    const r=80;const x=40,y=40,w=432,h=432;
+    ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+    ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+    ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+    ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();ctx.fill();
+    ctx.fillStyle='#000';ctx.font='bold 280px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText('⚡',256,270);
+    const iconUrl=c.toDataURL('image/png');
+    // Apple touch icon
+    const al=document.createElement('link');al.rel='apple-touch-icon';al.href=iconUrl;document.head.appendChild(al);
+    // Manifest
+    const manifest={name:'SPRINT',short_name:'SPRINT',start_url:location.href,
+      display:'standalone',background_color:'#000000',theme_color:'#CAFF4C',
+      icons:[{src:iconUrl,sizes:'512x512',type:'image/png'},{src:iconUrl,sizes:'192x192',type:'image/png'}]};
+    const mb=new Blob([JSON.stringify(manifest)],{type:'application/json'});
+    const ml=document.createElement('link');ml.rel='manifest';ml.href=URL.createObjectURL(mb);document.head.appendChild(ml);
+    // Service worker (basic cache for offline)
+    if('serviceWorker' in navigator){
+      const swCode=`
+        const V='sprint-v2-3';
+        self.addEventListener('install',e=>{self.skipWaiting();});
+        self.addEventListener('activate',e=>e.waitUntil(clients.claim()));
+        self.addEventListener('fetch',e=>{
+          if(e.request.method!=='GET')return;
+          e.respondWith(caches.open(V).then(async cache=>{
+            const cached=await cache.match(e.request);
+            const fresh=fetch(e.request).then(r=>{if(r.ok&&r.status===200)cache.put(e.request,r.clone());return r;}).catch(()=>cached);
+            return cached||fresh;
+          }));
+        });
+      `;
+      const sb=new Blob([swCode],{type:'text/javascript'});
+      navigator.serviceWorker.register(URL.createObjectURL(sb)).catch(()=>{});
+    }
+  }catch(e){}
+})();
+</script>
 <div id="root"></div>
 <script type="text/babel">
 const {useState,useEffect,useRef,useCallback,useMemo}=React;
@@ -42,100 +123,121 @@ const LIME="#CAFF4C",BORDER="#2a2a2a",TEXT="#e8e8e8",MUTED="#555";
 const RED="#FF453A",ORANGE="#FF9F0A",GREEN="#30D158";
 const CARD="#111",CARD2="#161616",INSET="#0a0a0a";
 const genId=()=>crypto.randomUUID();
-const todayKey=()=>new Date().toISOString().slice(0,10);
 
-const fmtSecs=s=>{
-  if(s<0)s=0;
-  const m=Math.floor(s/60),sec=s%60;
-  return `${m}:${String(sec).padStart(2,"0")}`;
-};
-const fmtTime12=t=>{
-  if(!t)return"";
-  const[h,m]=t.split(":");
-  const hr=parseInt(h),ampm=hr<12?"AM":"PM";
-  return `${hr===0?12:hr>12?hr-12:hr}:${m} ${ampm}`;
-};
+const fmtSecs=s=>{if(s<0)s=0;const m=Math.floor(s/60),sec=s%60;return `${m}:${String(sec).padStart(2,"0")}`;};
+const fmtTime12=t=>{if(!t)return"";const[h,m]=t.split(":");const hr=parseInt(h),ap=hr<12?"AM":"PM";return `${hr===0?12:hr>12?hr-12:hr}:${m} ${ap}`;};
+const fmtDate=d=>new Date(d).toLocaleDateString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"});
 const totalSecs=tasks=>(tasks||[]).reduce((a,t)=>a+(Number(t.seconds)||0),0);
 
-/* ── LocalStorage today-check ──────────────────────────────────── */
-const getDoneToday=()=>{
+/* ── Settings (per-user localStorage) ─────────────────────────── */
+const SKEY_FN=uid=>`sprint_settings_${uid}`;
+const loadSettings=uid=>{try{return JSON.parse(localStorage.getItem(SKEY_FN(uid))||'{}')}catch{return{}}};
+const persistSettings=(uid,s)=>{try{localStorage.setItem(SKEY_FN(uid),JSON.stringify(s))}catch{}};
+
+/* ── Done-today (reset-hour aware) ────────────────────────────── */
+const todayKey=(resetHour=4)=>{
+  const now=new Date();
+  const reset=new Date(now);reset.setHours(resetHour,0,0,0);
+  if(now<reset)reset.setDate(reset.getDate()-1);
+  return reset.toISOString().slice(0,10);
+};
+const getDoneToday=(resetHour=4)=>{
   try{
-    const raw=localStorage.getItem("sprint_done_today");
-    const obj=raw?JSON.parse(raw):{};
-    const today=todayKey();
+    const obj=JSON.parse(localStorage.getItem("sprint_done_v2")||"{}");
+    const today=todayKey(resetHour);
     Object.keys(obj).forEach(k=>{if(obj[k]!==today)delete obj[k];});
     return obj;
   }catch{return{};}
 };
-const markDoneToday=(id,done)=>{
-  const obj=getDoneToday();
-  if(done)obj[id]=todayKey();
-  else delete obj[id];
-  try{localStorage.setItem("sprint_done_today",JSON.stringify(obj));}catch{}
+const markDoneToday=(id,done,resetHour=4)=>{
+  const obj=getDoneToday(resetHour);
+  if(done)obj[id]=todayKey(resetHour);else delete obj[id];
+  try{localStorage.setItem("sprint_done_v2",JSON.stringify(obj))}catch{}
 };
 
-/* ── Audio / Speech ────────────────────────────────────────────── */
-const beep=(freq,dur,vol=0.25)=>{
-  try{
-    const ctx=new(window.AudioContext||window.webkitAudioContext)();
-    const o=ctx.createOscillator(),g=ctx.createGain();
-    o.connect(g);g.connect(ctx.destination);
-    o.frequency.value=freq;o.type="sine";
-    g.gain.setValueAtTime(vol,ctx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+dur/1000);
-    o.start(ctx.currentTime);o.stop(ctx.currentTime+dur/1000);
-  }catch{}
+/* ── Sprint order (localStorage) ──────────────────────────────── */
+const getOrder=uid=>{try{return JSON.parse(localStorage.getItem(`sprint_order_${uid}`)||"null")}catch{return null}};
+const saveOrder=(uid,ids)=>{try{localStorage.setItem(`sprint_order_${uid}`,JSON.stringify(ids))}catch{}};
+
+/* ── Runner state persistence ──────────────────────────────────── */
+const RKEY="sprint_runner_v23";
+const saveRunnerState=s=>{try{localStorage.setItem(RKEY,JSON.stringify({...s,savedAt:Date.now()}))}catch{}};
+const loadRunnerState=()=>{try{const s=JSON.parse(localStorage.getItem(RKEY)||"null");if(!s?.savedAt||Date.now()-s.savedAt>3600000)return null;return s;}catch{return null;}};
+const clearRunnerState=()=>{try{localStorage.removeItem(RKEY)}catch{}};
+
+// Advance runner state through elapsed real-world time
+const advanceState=(saved,tasks)=>{
+  if(!saved.running||saved.phase!=="running")return saved;
+  let elapsed=Math.floor((Date.now()-saved.savedAt)/1000);
+  let idx=saved.taskIdx;
+  let secs=saved.secs;
+  let addedElapsed=elapsed;
+  while(elapsed>0&&idx<tasks.length){
+    if(elapsed>=secs){elapsed-=secs;idx++;if(idx<tasks.length)secs=tasks[idx].seconds||30;}
+    else{secs-=elapsed;elapsed=0;}
+  }
+  const done=idx>=tasks.length;
+  return{...saved,taskIdx:done?tasks.length-1:idx,secs:done?0:secs,elapsed:(saved.elapsed||0)+addedElapsed,phase:done?"done":"running",running:!done};
 };
-const chime=()=>{
-  beep(523,180,0.2);
-  setTimeout(()=>beep(659,180,0.2),160);
-  setTimeout(()=>beep(784,300,0.25),320);
+
+/* ── Wake Lock ─────────────────────────────────────────────────── */
+let _wl=null;
+const acqWakeLock=async()=>{
+  try{if("wakeLock" in navigator){_wl=await navigator.wakeLock.request("screen");}}catch{}
 };
-const speak=text=>{
+const relWakeLock=()=>{
+  try{if(_wl){_wl.release();_wl=null;}}catch{}
+};
+const reacqWakeLock=async()=>{
+  if(document.visibilityState==="visible"&&!_wl)await acqWakeLock();
+};
+
+/* ── Notifications ─────────────────────────────────────────────── */
+const askNotifPerm=async()=>{
+  try{if("Notification" in window&&Notification.permission==="default")await Notification.requestPermission();}catch{}
+};
+const showTaskNotif=(task,num,total)=>{
   try{
-    window.speechSynthesis.cancel();
-    const u=new SpeechSynthesisUtterance(text);
-    u.rate=0.88;u.pitch=1.05;u.volume=1;
-    window.speechSynthesis.speak(u);
+    if("Notification" in window&&Notification.permission==="granted"){
+      new Notification(`⚡ Task ${num}/${total}`,{
+        body:`${task.title} — ${fmtSecs(task.seconds||0)}`,
+        tag:"sprint-task",renotify:true,silent:true,
+      });
+    }
   }catch{}
 };
 
 /* ── Spinner ───────────────────────────────────────────────────── */
 const Spinner=({size=16,color=LIME})=>(
-  <div className="spin" style={{width:size,height:size,border:"2px solid #2a2a2a",
-    borderTopColor:color,borderRadius:"50%",flexShrink:0}}/>
+  <div className="spin" style={{width:size,height:size,border:"2px solid #2a2a2a",borderTopColor:color,borderRadius:"50%",flexShrink:0}}/>
 );
 
-/* ── 3-Dot Menu ────────────────────────────────────────────────── */
-function DotMenu({items}){
+/* ── DotMenu ───────────────────────────────────────────────────── */
+function DotMenu({items,align="right"}){
   const [open,setOpen]=useState(false);
   const ref=useRef(null);
   useEffect(()=>{
     if(!open)return;
-    const close=e=>{if(ref.current&&!ref.current.contains(e.target))setOpen(false);};
-    document.addEventListener("mousedown",close);
-    document.addEventListener("touchstart",close);
-    return()=>{document.removeEventListener("mousedown",close);document.removeEventListener("touchstart",close);};
+    const h=e=>{if(ref.current&&!ref.current.contains(e.target))setOpen(false);};
+    document.addEventListener("pointerdown",h);
+    return()=>document.removeEventListener("pointerdown",h);
   },[open]);
   return(
     <div ref={ref} style={{position:"relative",flexShrink:0}}>
-      <button onClick={()=>setOpen(o=>!o)}
+      <button onClick={e=>{e.stopPropagation();setOpen(o=>!o);}}
         style={{background:"none",border:"none",color:MUTED,fontSize:20,cursor:"pointer",
-          padding:"4px 8px",lineHeight:1,borderRadius:7,transition:"color .15s",
-          display:"flex",alignItems:"center",justifyContent:"center"}}
+          padding:"4px 8px",lineHeight:1,borderRadius:7,display:"flex",alignItems:"center"}}
         onMouseEnter={e=>e.currentTarget.style.color=TEXT}
-        onMouseLeave={e=>e.currentTarget.style.color=MUTED}>
-        ⋯
-      </button>
+        onMouseLeave={e=>e.currentTarget.style.color=MUTED}>⋯</button>
       {open&&(
         <div className="fade-in"
-          style={{position:"absolute",right:0,top:"calc(100% + 4px)",
+          style={{position:"absolute",[align]:0,top:"calc(100% + 4px)",
             background:"#1a1a1a",border:`1px solid ${BORDER}`,borderRadius:10,
-            minWidth:165,zIndex:999,overflow:"hidden",boxShadow:"0 8px 32px rgba(0,0,0,.7)"}}>
-          {items.map((item,i)=>(
+            minWidth:170,zIndex:9999,overflow:"hidden",boxShadow:"0 8px 32px rgba(0,0,0,.8)"}}>
+          {items.map((item,i)=>
             item==="---"
               ?<div key={i} style={{height:1,background:BORDER,margin:"3px 0"}}/>
-              :<button key={i} onClick={()=>{setOpen(false);item.action();}}
+              :<button key={i} onClick={e=>{e.stopPropagation();setOpen(false);item.action();}}
                 style={{display:"block",width:"100%",textAlign:"left",padding:"11px 16px",
                   background:"none",border:"none",color:item.danger?RED:TEXT,
                   fontSize:13,cursor:"pointer",fontFamily:"inherit",fontWeight:item.danger?700:400}}
@@ -143,7 +245,7 @@ function DotMenu({items}){
                 onMouseLeave={e=>e.currentTarget.style.background="none"}>
                 {item.label}
               </button>
-          ))}
+          )}
         </div>
       )}
     </div>
@@ -152,82 +254,277 @@ function DotMenu({items}){
 
 /* ── Auth Screen ───────────────────────────────────────────────── */
 function AuthScreen({onAuth}){
-  const [mode,setMode]=useState("login");
-  const [email,setEmail]=useState(""),[pw,setPw]=useState("");
+  const [mode,setMode]=useState("login"),[email,setEmail]=useState(""),[pw,setPw]=useState("");
   const [loading,setLoading]=useState(false),[err,setErr]=useState("");
+  const inp={width:"100%",padding:"12px 14px",borderRadius:9,border:`1px solid ${BORDER}`,
+    background:CARD,color:TEXT,fontSize:16,fontFamily:"inherit",outline:"none",marginBottom:14};
   const submit=async()=>{
     if(!email||!pw)return setErr("Email and password required");
     setLoading(true);setErr("");
     try{
-      const res=mode==="login"
-        ?await db.auth.signInWithPassword({email,password:pw})
-        :await db.auth.signUp({email,password:pw});
+      const res=mode==="login"?await db.auth.signInWithPassword({email,password:pw}):await db.auth.signUp({email,password:pw});
       if(res.error)throw res.error;
-      if(mode==="signup"&&!res.data.session){setLoading(false);setErr("Check your email to confirm, then sign in.");return;}
+      if(mode==="signup"&&!res.data.session){setLoading(false);setErr("Check email to confirm, then sign in.");return;}
       onAuth(res.data.user);
-    }catch(e){setErr(e.message||"Something went wrong");}
+    }catch(e){setErr(e.message||"Error");}
     setLoading(false);
   };
-  const inp={width:"100%",padding:"12px 14px",borderRadius:9,border:`1px solid ${BORDER}`,
-    background:CARD,color:TEXT,fontSize:16,fontFamily:"inherit",outline:"none",marginBottom:14};
   return(
-    <div style={{height:"100%",display:"flex",flexDirection:"column",alignItems:"center",
-      justifyContent:"center",padding:24,background:"#000"}}>
+    <div style={{height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24,background:"#000"}}>
       <div style={{width:"100%",maxWidth:360}}>
         <div style={{textAlign:"center",marginBottom:36}}>
           <div style={{fontSize:11,color:MUTED,letterSpacing:5,marginBottom:8}}>DAYCRUSH PRESENTS</div>
           <div style={{fontSize:44,fontWeight:900,letterSpacing:-3,lineHeight:1}}>
             <span style={{color:LIME}}>⚡</span><span style={{color:TEXT}}> SPRINT</span>
           </div>
-          <div style={{fontSize:11,color:MUTED,letterSpacing:4,marginTop:6}}>v2.1</div>
+          <div style={{fontSize:11,color:MUTED,letterSpacing:4,marginTop:6}}>v2.3</div>
         </div>
         <div style={{display:"flex",marginBottom:20,border:`1px solid ${BORDER}`,borderRadius:10,overflow:"hidden"}}>
           {["login","signup"].map(m=>(
             <button key={m} onClick={()=>{setMode(m);setErr("");}}
               style={{flex:1,padding:"10px",background:mode===m?"#1a1a1a":"transparent",border:"none",
-                cursor:"pointer",fontSize:13,fontWeight:mode===m?700:400,
-                color:mode===m?TEXT:MUTED,fontFamily:"inherit"}}>
+                cursor:"pointer",fontSize:13,fontWeight:mode===m?700:400,color:mode===m?TEXT:MUTED,fontFamily:"inherit"}}>
               {m==="login"?"Sign In":"Sign Up"}
             </button>
           ))}
         </div>
-        <input type="email" value={email} onChange={e=>setEmail(e.target.value)}
-          onKeyDown={e=>e.key==="Enter"&&submit()} placeholder="Email" style={inp} autoCapitalize="none"/>
-        <input type="password" value={pw} onChange={e=>setPw(e.target.value)}
-          onKeyDown={e=>e.key==="Enter"&&submit()} placeholder="Password" style={{...inp,marginBottom:20}}/>
-        {err&&<div style={{fontSize:12,color:err.includes("Check")?LIME:RED,marginBottom:14,
-          padding:"9px 12px",borderRadius:8,background:err.includes("Check")?"#0a140a":"#1a0a0a"}}>{err}</div>}
+        <input type="email" value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} placeholder="Email" style={inp} autoCapitalize="none"/>
+        <input type="password" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==="Enter"&&submit()} placeholder="Password" style={{...inp,marginBottom:20}}/>
+        {err&&<div style={{fontSize:12,color:err.includes("Check")?LIME:RED,marginBottom:14,padding:"9px 12px",borderRadius:8,background:err.includes("Check")?"#0a140a":"#1a0a0a"}}>{err}</div>}
         <button onClick={submit} disabled={loading}
-          style={{width:"100%",padding:"13px",borderRadius:10,border:"none",
-            background:loading?"#2a2a2a":LIME,color:loading?MUTED:"#000",
-            fontWeight:900,fontSize:15,fontFamily:"inherit",cursor:loading?"default":"pointer",
-            display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
-          {loading&&<Spinner size={14} color={MUTED}/>}
-          {mode==="login"?"Sign In":"Create Account"}
+          style={{width:"100%",padding:"13px",borderRadius:10,border:"none",background:loading?"#2a2a2a":LIME,color:loading?MUTED:"#000",
+            fontWeight:900,fontSize:15,fontFamily:"inherit",cursor:loading?"default":"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+          {loading&&<Spinner size={14} color={MUTED}/>}{mode==="login"?"Sign In":"Create Account"}
         </button>
-        <div style={{textAlign:"center",marginTop:16,fontSize:11,color:"#333"}}>Powered by the Daycrush database</div>
       </div>
     </div>
   );
 }
 
+/* ── Settings Panel ────────────────────────────────────────────── */
+function SettingsPanel({settings,onSave,onClose}){
+  const [resetHour,setResetHour]=useState(settings.resetHour??4);
+  const hours=Array.from({length:13},(_,i)=>i);
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.75)",zIndex:900,display:"flex",alignItems:"flex-end"}}
+      onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()}
+        style={{width:"100%",background:"#111",borderRadius:"16px 16px 0 0",padding:"24px 20px 36px",border:`1px solid ${BORDER}`}}>
+        <div style={{fontWeight:800,fontSize:16,color:TEXT,marginBottom:20}}>⚙️ Settings</div>
+        <div style={{marginBottom:20}}>
+          <div style={{fontSize:11,color:MUTED,letterSpacing:2,marginBottom:10,fontWeight:700}}>DAY RESETS AT</div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            {hours.map(h=>(
+              <button key={h} onClick={()=>setResetHour(h)}
+                style={{padding:"7px 12px",borderRadius:7,border:`1px solid ${resetHour===h?LIME:BORDER}`,
+                  background:resetHour===h?"#0a140a":"transparent",color:resetHour===h?LIME:MUTED,
+                  fontSize:12,cursor:"pointer",fontFamily:"inherit",fontWeight:resetHour===h?700:400}}>
+                {h===0?"Midnight":`${h}:00 ${h<12?"AM":"PM"}`}
+              </button>
+            ))}
+          </div>
+          <div style={{fontSize:11,color:MUTED,marginTop:8,lineHeight:1.5}}>
+            Sprints marked done reset at this hour each day.
+          </div>
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={onClose} style={{flex:1,padding:"11px",borderRadius:9,border:`1px solid ${BORDER}`,background:"transparent",color:MUTED,cursor:"pointer",fontFamily:"inherit"}}>Cancel</button>
+          <button onClick={()=>onSave({...settings,resetHour})}
+            style={{flex:2,padding:"11px",borderRadius:9,border:"none",background:LIME,color:"#000",fontWeight:900,fontFamily:"inherit",cursor:"pointer"}}>Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── History Panel ─────────────────────────────────────────────── */
+function HistoryPanel({user,onClose}){
+  const [runs,setRuns]=useState([]);
+  const [loading,setLoading]=useState(true);
+  useEffect(()=>{
+    db.from("sprint_runs").select("*").eq("user_id",user.id)
+      .order("completed_at",{ascending:false}).limit(50)
+      .then(({data})=>{setRuns(data||[]);setLoading(false);});
+  },[]);
+  return(
+    <div style={{position:"fixed",inset:0,background:"#000",zIndex:800,display:"flex",flexDirection:"column"}}>
+      <div style={{padding:"16px 18px",borderBottom:`1px solid ${BORDER}`,display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
+        <button onClick={onClose} style={{background:"none",border:"none",color:MUTED,fontSize:26,cursor:"pointer",lineHeight:1,padding:"0 4px",marginLeft:-4}}>‹</button>
+        <div style={{fontWeight:800,fontSize:16,color:TEXT,flex:1}}>📊 Run History</div>
+      </div>
+      <div style={{flex:1,overflowY:"auto",padding:"14px 18px"}}>
+        {loading&&<div style={{display:"flex",justifyContent:"center",paddingTop:40}}><Spinner size={22}/></div>}
+        {!loading&&runs.length===0&&(
+          <div style={{textAlign:"center",padding:"60px 0",color:MUTED}}>
+            <div style={{fontSize:36,marginBottom:12}}>📊</div>
+            <div style={{fontSize:14,color:TEXT,fontWeight:700,marginBottom:6}}>No runs yet</div>
+            <div style={{fontSize:12}}>Complete a sprint to see history here.</div>
+          </div>
+        )}
+        {runs.map(r=>(
+          <div key={r.id} style={{background:CARD,borderRadius:10,border:`1px solid ${BORDER}`,padding:"12px 14px",marginBottom:8}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+              <span style={{fontSize:20}}>{r.sprint_emoji||"⚡"}</span>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontWeight:700,fontSize:14,color:TEXT,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.sprint_name}</div>
+                <div style={{fontSize:11,color:MUTED,marginTop:1}}>{fmtDate(r.completed_at)}</div>
+              </div>
+            </div>
+            <div style={{display:"flex",gap:10}}>
+              <div style={{background:INSET,borderRadius:6,padding:"6px 10px",textAlign:"center"}}>
+                <div style={{fontSize:9,color:MUTED,letterSpacing:1,marginBottom:2}}>TASKS</div>
+                <div style={{fontSize:14,fontWeight:800,color:TEXT}}>{r.task_count}</div>
+              </div>
+              <div style={{background:INSET,borderRadius:6,padding:"6px 10px",textAlign:"center"}}>
+                <div style={{fontSize:9,color:MUTED,letterSpacing:1,marginBottom:2}}>ELAPSED</div>
+                <div style={{fontSize:14,fontWeight:800,color:LIME}}>{fmtSecs(r.elapsed_secs)}</div>
+              </div>
+              <div style={{background:INSET,borderRadius:6,padding:"6px 10px",textAlign:"center"}}>
+                <div style={{fontSize:9,color:MUTED,letterSpacing:1,marginBottom:2}}>PLANNED</div>
+                <div style={{fontSize:14,fontWeight:800,color:ORANGE}}>{fmtSecs(r.planned_secs)}</div>
+              </div>
+              {r.elapsed_secs>0&&r.planned_secs>0&&(
+                <div style={{background:INSET,borderRadius:6,padding:"6px 10px",textAlign:"center"}}>
+                  <div style={{fontSize:9,color:MUTED,letterSpacing:1,marginBottom:2}}>PACE</div>
+                  <div style={{fontSize:14,fontWeight:800,
+                    color:r.elapsed_secs<=r.planned_secs?GREEN:RED}}>
+                    {r.elapsed_secs<=r.planned_secs?"✓":"+"+fmtSecs(r.elapsed_secs-r.planned_secs)}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ── PWA Install Banner ─────────────────────────────────────────── */
+function InstallBanner({onDismiss}){
+  const [prompt,setPrompt]=useState(null);
+  const isIOS=/iphone|ipad|ipod/i.test(navigator.userAgent);
+  const isStandalone=window.matchMedia("(display-mode: standalone)").matches||window.navigator.standalone;
+  useEffect(()=>{
+    const h=e=>{e.preventDefault();setPrompt(e);};
+    window.addEventListener("beforeinstallprompt",h);
+    return()=>window.removeEventListener("beforeinstallprompt",h);
+  },[]);
+  if(isStandalone)return null;
+  if(!isIOS&&!prompt)return null;
+  const install=async()=>{
+    if(prompt){prompt.prompt();const r=await prompt.userChoice;if(r.outcome==="accepted")onDismiss();}
+  };
+  return(
+    <div style={{background:"#0a140a",border:`1px solid ${GREEN}44`,borderRadius:10,
+      padding:"12px 14px",margin:"0 0 10px",display:"flex",alignItems:"flex-start",gap:10}}>
+      <span style={{fontSize:22,flexShrink:0}}>⚡</span>
+      <div style={{flex:1}}>
+        <div style={{fontWeight:700,fontSize:13,color:GREEN,marginBottom:3}}>Add SPRINT to Home Screen</div>
+        {isIOS
+          ?<div style={{fontSize:11,color:MUTED,lineHeight:1.5}}>Tap the Share button <span style={{color:TEXT}}>⎙</span> then "Add to Home Screen" for the full experience.</div>
+          :<div style={{fontSize:11,color:MUTED}}>Install as an app for quick access and better performance.</div>
+        }
+        {!isIOS&&prompt&&(
+          <button onClick={install}
+            style={{marginTop:8,padding:"5px 14px",borderRadius:6,border:"none",
+              background:GREEN,color:"#000",fontWeight:700,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
+            Install App
+          </button>
+        )}
+      </div>
+      <button onClick={onDismiss} style={{background:"none",border:"none",color:MUTED,cursor:"pointer",fontSize:16,lineHeight:1,flexShrink:0}}>✕</button>
+    </div>
+  );
+}
+
 /* ── Sprint List ───────────────────────────────────────────────── */
-function SprintList({user,sprints,loading,onRun,onEdit,onCreate,onDelete,onRefresh}){
-  const [doneMap,setDoneMap]=useState(()=>getDoneToday());
+function SprintList({user,sprints,loading,settings,onRun,onEdit,onCreate,onDuplicate,onDelete,onRefresh,onShowHistory,onShowSettings}){
+  const resetHour=settings.resetHour??4;
+  const [doneMap,setDoneMap]=useState(()=>getDoneToday(resetHour));
+  const [orderIds,setOrderIds]=useState(()=>getOrder(user?.id));
+  const [showInstall,setShowInstall]=useState(()=>{try{return!localStorage.getItem("sprint_install_dismissed")}catch{return true}});
+
+  // Refresh doneMap when resetHour changes
+  useEffect(()=>setDoneMap(getDoneToday(resetHour)),[resetHour]);
 
   const toggleDone=id=>{
-    markDoneToday(id,!doneMap[id]);
-    setDoneMap(getDoneToday());
+    markDoneToday(id,!doneMap[id],resetHour);
+    setDoneMap(getDoneToday(resetHour));
   };
 
-  const sorted=useMemo(()=>[...sprints].sort((a,b)=>{
-    if(a.scheduled_time&&b.scheduled_time)return a.scheduled_time.localeCompare(b.scheduled_time);
-    if(a.scheduled_time)return -1;
-    if(b.scheduled_time)return 1;
-    return 0;
-  }),[sprints]);
+  // Apply manual order, then sort by scheduled_time within
+  const displayed=useMemo(()=>{
+    if(orderIds){
+      const ordered=[];
+      orderIds.forEach(id=>{const s=sprints.find(x=>x.id===id);if(s)ordered.push(s);});
+      sprints.forEach(s=>{if(!orderIds.includes(s.id))ordered.push(s);});
+      return ordered;
+    }
+    return [...sprints].sort((a,b)=>{
+      if(a.scheduled_time&&b.scheduled_time)return a.scheduled_time.localeCompare(b.scheduled_time);
+      if(a.scheduled_time)return -1;if(b.scheduled_time)return 1;return 0;
+    });
+  },[sprints,orderIds]);
 
-  const doneCount=sorted.filter(s=>!!doneMap[s.id]).length;
+  const doneCount=displayed.filter(s=>!!doneMap[s.id]).length;
+
+  /* ── Drag to reorder ── */
+  const [dragIdx,setDragIdx]=useState(null);
+  const [dropIdx,setDropIdx]=useState(null);
+  const dragTimerRef=useRef(null);
+  const listRef=useRef(null);
+  const dragActive=useRef(false);
+
+  const handleHandlePointerDown=useCallback((e,idx)=>{
+    e.preventDefault();
+    const startY=e.clientY||e.touches?.[0]?.clientY||0;
+    dragTimerRef.current=setTimeout(()=>{
+      dragActive.current=true;
+      setDragIdx(idx);setDropIdx(idx);
+      try{navigator.vibrate&&navigator.vibrate(40);}catch{}
+    },280);
+  },[]);
+
+  const handlePointerMove=useCallback(e=>{
+    if(!dragActive.current)return;
+    const clientY=e.clientY||(e.touches?.[0]?.clientY||0);
+    const list=listRef.current;if(!list)return;
+    const cards=list.querySelectorAll("[data-drag-item]");
+    let target=dragIdx;
+    cards.forEach((card,i)=>{
+      const rect=card.getBoundingClientRect();
+      if(clientY>rect.top+rect.height/2)target=i;
+    });
+    setDropIdx(target);
+  },[dragIdx]);
+
+  const handlePointerUp=useCallback(()=>{
+    clearTimeout(dragTimerRef.current);
+    if(dragActive.current&&dragIdx!==null&&dropIdx!==null&&dragIdx!==dropIdx){
+      const newOrder=[...displayed];
+      const [removed]=newOrder.splice(dragIdx,1);
+      newOrder.splice(dropIdx,0,removed);
+      const ids=newOrder.map(s=>s.id);
+      setOrderIds(ids);
+      saveOrder(user?.id,ids);
+    }
+    dragActive.current=false;
+    setDragIdx(null);setDropIdx(null);
+  },[dragIdx,dropIdx,displayed,user]);
+
+  useEffect(()=>{
+    window.addEventListener("pointermove",handlePointerMove,{passive:true});
+    window.addEventListener("pointerup",handlePointerUp);
+    window.addEventListener("touchmove",handlePointerMove,{passive:true});
+    window.addEventListener("touchend",handlePointerUp);
+    return()=>{
+      window.removeEventListener("pointermove",handlePointerMove);
+      window.removeEventListener("pointerup",handlePointerUp);
+      window.removeEventListener("touchmove",handlePointerMove);
+      window.removeEventListener("touchend",handlePointerUp);
+    };
+  },[handlePointerMove,handlePointerUp]);
 
   return(
     <div style={{height:"100%",display:"flex",flexDirection:"column",background:"#000"}}>
@@ -239,63 +536,82 @@ function SprintList({user,sprints,loading,onRun,onEdit,onCreate,onDelete,onRefre
           <div style={{fontWeight:900,fontSize:22,letterSpacing:-2,lineHeight:1}}>
             <span style={{color:LIME}}>⚡</span><span style={{color:TEXT}}> SPRINT</span>
           </div>
-          <div style={{fontSize:10,color:MUTED,letterSpacing:3,marginTop:2}}>v2.1</div>
+          <div style={{fontSize:10,color:MUTED,letterSpacing:3,marginTop:2}}>v2.3</div>
         </div>
-        {sorted.length>0&&(
-          <div style={{background:doneCount===sorted.length?"#0a1f0a":INSET,
-            border:`1px solid ${doneCount===sorted.length?GREEN+"44":BORDER}`,
+        {displayed.length>0&&(
+          <div style={{background:doneCount===displayed.length?"#0a1f0a":INSET,
+            border:`1px solid ${doneCount===displayed.length?GREEN+"44":BORDER}`,
             borderRadius:8,padding:"4px 10px",display:"flex",alignItems:"center",gap:5}}>
-            <span style={{fontSize:13,color:doneCount===sorted.length?GREEN:MUTED,fontWeight:700}}>
-              {doneCount}/{sorted.length}
+            <span style={{fontSize:13,color:doneCount===displayed.length?GREEN:MUTED,fontWeight:700}}>
+              {doneCount}/{displayed.length}
             </span>
-            <span style={{fontSize:10,color:doneCount===sorted.length?GREEN:MUTED}}>done</span>
+            <span style={{fontSize:10,color:doneCount===displayed.length?GREEN:MUTED}}>done</span>
           </div>
         )}
         <DotMenu items={[
           {label:"↻ Refresh",action:onRefresh},
+          {label:"📊 Run History",action:onShowHistory},
+          {label:"⚙️ Settings",action:onShowSettings},
           "---",
           {label:"Sign Out",danger:true,action:()=>db.auth.signOut()},
         ]}/>
       </div>
 
       {/* List */}
-      <div style={{flex:1,overflowY:"auto",padding:"12px 16px"}}>
+      <div ref={listRef} style={{flex:1,overflowY:"auto",padding:"12px 16px",
+        userSelect:dragIdx!==null?"none":"auto"}}>
+
+        {showInstall&&<InstallBanner onDismiss={()=>{setShowInstall(false);try{localStorage.setItem("sprint_install_dismissed","1")}catch{}}}/>}
+
         {loading&&<div style={{display:"flex",justifyContent:"center",paddingTop:60}}><Spinner size={24}/></div>}
 
-        {!loading&&sorted.length===0&&(
+        {!loading&&displayed.length===0&&(
           <div style={{textAlign:"center",padding:"80px 0",color:MUTED}}>
             <div style={{fontSize:52,marginBottom:14}}>⚡</div>
             <div style={{fontSize:16,fontWeight:800,color:TEXT,marginBottom:8}}>No sprints yet</div>
-            <div style={{fontSize:13,lineHeight:1.6}}>
-              Create a sprint with ordered tasks.<br/>
-              Set a time and check them off throughout the day.
-            </div>
+            <div style={{fontSize:13,lineHeight:1.6}}>Create a sprint with ordered tasks.<br/>Set a time and check them off throughout the day.</div>
           </div>
         )}
 
-        {!loading&&sorted.map(sp=>{
+        {!loading&&displayed.map((sp,i)=>{
           const done=!!doneMap[sp.id];
+          const isDragging=dragIdx===i;
+          const isDropTarget=dropIdx===i&&dragIdx!==null&&dragIdx!==i;
           return(
-            <div key={sp.id} className="fade-in"
-              style={{background:done?"#0a0f0a":CARD,borderRadius:12,
-                border:`1px solid ${done?GREEN+"33":BORDER}`,
+            <div key={sp.id} data-drag-item
+              style={{background:done?"#0a0f0a":isDragging?"#1a1a1a":CARD,
+                borderRadius:12,
+                border:`1px solid ${isDropTarget?LIME:done?GREEN+"33":BORDER}`,
+                borderTop:isDropTarget?`2px solid ${LIME}`:undefined,
                 padding:"13px 14px",marginBottom:9,
-                transition:"all .3s",opacity:done?0.6:1}}>
+                transition:"opacity .2s,border .15s",
+                opacity:isDragging?0.45:done?0.62:1,
+                cursor:dragIdx!==null?"grabbing":"default",
+                transform:isDragging?"scale(0.97)":"none"}}>
 
-              <div style={{display:"flex",alignItems:"center",gap:10}}>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+
+                {/* Drag handle */}
+                <div
+                  onPointerDown={e=>handleHandlePointerDown(e,i)}
+                  style={{cursor:"grab",padding:"4px 6px",color:BORDER,fontSize:14,
+                    flexShrink:0,touchAction:"none",userSelect:"none",lineHeight:1}}>
+                  ⠿
+                </div>
+
                 {/* Check-off */}
                 <button onClick={()=>toggleDone(sp.id)}
-                  style={{width:28,height:28,borderRadius:"50%",flexShrink:0,cursor:"pointer",
+                  style={{width:26,height:26,borderRadius:"50%",flexShrink:0,cursor:"pointer",
                     border:`2px solid ${done?GREEN:BORDER}`,background:done?GREEN:"transparent",
                     display:"flex",alignItems:"center",justifyContent:"center",transition:"all .2s"}}>
-                  {done&&<span style={{color:"#000",fontSize:13,fontWeight:900,lineHeight:1}}>✓</span>}
+                  {done&&<span style={{color:"#000",fontSize:12,fontWeight:900,lineHeight:1}}>✓</span>}
                 </button>
 
-                <span style={{fontSize:24,flexShrink:0}}>{sp.emoji||"⚡"}</span>
+                <span style={{fontSize:22,flexShrink:0}}>{sp.emoji||"⚡"}</span>
 
                 <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontWeight:800,fontSize:14,
-                    color:done?"#30D158aa":TEXT,textDecoration:done?"line-through":"none",
+                  <div style={{fontWeight:800,fontSize:14,color:done?"#30D158aa":TEXT,
+                    textDecoration:done?"line-through":"none",
                     overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
                     {sp.name}
                   </div>
@@ -307,20 +623,21 @@ function SprintList({user,sprints,loading,onRun,onEdit,onCreate,onDelete,onRefre
                   </div>
                 </div>
 
-                <div style={{display:"flex",gap:6,flexShrink:0,alignItems:"center"}}>
+                <div style={{display:"flex",gap:5,flexShrink:0,alignItems:"center"}}>
                   <button onClick={()=>onEdit(sp)}
-                    style={{padding:"5px 10px",borderRadius:7,border:`1px solid ${BORDER}`,
+                    style={{padding:"5px 9px",borderRadius:7,border:`1px solid ${BORDER}`,
                       background:"transparent",color:MUTED,cursor:"pointer",fontSize:12,fontFamily:"inherit"}}>
                     Edit
                   </button>
                   <button onClick={()=>onRun(sp)}
-                    style={{padding:"6px 14px",borderRadius:7,border:"none",
+                    style={{padding:"6px 13px",borderRadius:7,border:"none",
                       background:LIME,color:"#000",fontWeight:900,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
                     ▶ Run
                   </button>
                   <DotMenu items={[
                     {label:"▶ Run sprint",action:()=>onRun(sp)},
                     {label:"Edit sprint",action:()=>onEdit(sp)},
+                    {label:"Duplicate sprint",action:()=>onDuplicate(sp)},
                     "---",
                     {label:done?"Unmark done":"Mark done today",action:()=>toggleDone(sp.id)},
                     "---",
@@ -333,8 +650,8 @@ function SprintList({user,sprints,loading,onRun,onEdit,onCreate,onDelete,onRefre
               {(sp.tasks||[]).length>0&&(
                 <div style={{marginTop:10,paddingTop:10,borderTop:`1px solid ${BORDER}`,
                   display:"flex",gap:5,overflowX:"auto",scrollbarWidth:"none"}}>
-                  {(sp.tasks||[]).map((t,i)=>(
-                    <div key={t.id||i}
+                  {(sp.tasks||[]).map((t,ti)=>(
+                    <div key={t.id||ti}
                       style={{flexShrink:0,background:INSET,borderRadius:6,padding:"4px 8px",
                         border:`1px solid ${BORDER}`,maxWidth:130}}>
                       <div style={{fontSize:9,color:LIME,fontWeight:700,marginBottom:1}}>{fmtSecs(t.seconds||0)}</div>
@@ -350,7 +667,6 @@ function SprintList({user,sprints,loading,onRun,onEdit,onCreate,onDelete,onRefre
         })}
       </div>
 
-      {/* Footer */}
       <div style={{padding:"12px 16px 22px",borderTop:`1px solid ${BORDER}`,flexShrink:0}}>
         <button onClick={onCreate}
           style={{width:"100%",padding:"14px",borderRadius:10,border:"none",
@@ -374,13 +690,13 @@ function SprintEditor({sprint,onSave,onCancel,onDelete}){
   const [newTitle,setNewTitle]=useState("");
   const [newSecs,setNewSecs]=useState(30);
   const [saving,setSaving]=useState(false);
+  const [expandedNote,setExpandedNote]=useState(null); // task id
   const newTitleRef=useRef(null);
 
   const addTask=()=>{
     if(!newTitle.trim())return;
-    setTasks(ts=>[...ts,{id:genId(),title:newTitle.trim(),seconds:Math.max(1,Number(newSecs)||30)}]);
-    setNewTitle("");
-    setTimeout(()=>newTitleRef.current?.focus(),50);
+    setTasks(ts=>[...ts,{id:genId(),title:newTitle.trim(),seconds:Math.max(1,Number(newSecs)||30),notes:""}]);
+    setNewTitle("");setTimeout(()=>newTitleRef.current?.focus(),50);
   };
   const delTask=id=>setTasks(ts=>ts.filter(t=>t.id!==id));
   const updTask=(id,k,v)=>setTasks(ts=>ts.map(t=>t.id===id?{...t,[k]:v}:t));
@@ -388,140 +704,101 @@ function SprintEditor({sprint,onSave,onCancel,onDelete}){
   const moveDn=i=>{if(i===tasks.length-1)return;const a=[...tasks];[a[i],a[i+1]]=[a[i+1],a[i]];setTasks(a);};
 
   const save=async()=>{
-    if(!name.trim())return;
-    setSaving(true);
+    if(!name.trim())return;setSaving(true);
     await onSave({...(sprint||{}),name:name.trim(),emoji,scheduled_time:scheduledTime||null,tasks});
     setSaving(false);
   };
-
-  const inp={padding:"10px 12px",borderRadius:8,border:`1px solid ${BORDER}`,
-    background:CARD,color:TEXT,fontSize:14,fontFamily:"inherit",outline:"none"};
+  const inp={padding:"10px 12px",borderRadius:8,border:`1px solid ${BORDER}`,background:CARD,color:TEXT,fontSize:14,fontFamily:"inherit",outline:"none"};
 
   return(
     <div style={{height:"100%",display:"flex",flexDirection:"column",background:"#000"}}>
-
-      {/* Header */}
-      <div style={{padding:"16px 18px",borderBottom:`1px solid ${BORDER}`,
-        display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
-        <button onClick={onCancel}
-          style={{background:"none",border:"none",color:MUTED,fontSize:26,cursor:"pointer",
-            lineHeight:1,padding:"0 4px",marginLeft:-4}}>‹</button>
-        <div style={{flex:1,fontWeight:800,fontSize:16,color:TEXT}}>
-          {isNew?"New Sprint":"Edit Sprint"}
-        </div>
+      <div style={{padding:"16px 18px",borderBottom:`1px solid ${BORDER}`,display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
+        <button onClick={onCancel} style={{background:"none",border:"none",color:MUTED,fontSize:26,cursor:"pointer",lineHeight:1,padding:"0 4px",marginLeft:-4}}>‹</button>
+        <div style={{flex:1,fontWeight:800,fontSize:16,color:TEXT}}>{isNew?"New Sprint":"Edit Sprint"}</div>
         {!isNew&&<DotMenu items={[{label:"Delete sprint",danger:true,action:onDelete}]}/>}
       </div>
 
-      {/* Body */}
       <div style={{flex:1,overflowY:"auto",padding:"16px 18px"}}>
-
-        {/* Name + emoji */}
         <div style={{display:"flex",gap:8,marginBottom:14}}>
-          <input value={emoji} onChange={e=>setEmoji(e.target.value)}
-            style={{...inp,width:52,textAlign:"center",fontSize:22,padding:"8px 4px"}}/>
-          <input value={name} onChange={e=>setName(e.target.value)} placeholder="Sprint name…"
-            style={{...inp,flex:1,fontSize:15,fontWeight:700}}/>
+          <input value={emoji} onChange={e=>setEmoji(e.target.value)} style={{...inp,width:52,textAlign:"center",fontSize:22,padding:"8px 4px"}}/>
+          <input value={name} onChange={e=>setName(e.target.value)} placeholder="Sprint name…" style={{...inp,flex:1,fontSize:15,fontWeight:700}}/>
         </div>
 
-        {/* Scheduled time */}
         <div style={{marginBottom:22}}>
           <div style={{fontSize:10,color:MUTED,letterSpacing:2,fontWeight:700,marginBottom:8}}>
-            SCHEDULED TIME
-            <span style={{color:BORDER,fontWeight:400,letterSpacing:0,textTransform:"none",
-              marginLeft:6,fontSize:10}}> — optional, sorts your day</span>
+            SCHEDULED TIME <span style={{color:BORDER,fontWeight:400,letterSpacing:0,fontSize:10}}> — optional, sorts your day</span>
           </div>
           <div style={{display:"flex",gap:8,alignItems:"center"}}>
             <input type="time" value={scheduledTime} onChange={e=>setScheduledTime(e.target.value)}
               style={{...inp,flex:1,color:scheduledTime?ORANGE:MUTED,fontWeight:scheduledTime?700:400}}/>
-            {scheduledTime&&(
-              <button onClick={()=>setScheduledTime("")}
-                style={{background:"none",border:`1px solid ${BORDER}`,borderRadius:7,
-                  padding:"10px 12px",color:MUTED,cursor:"pointer",fontSize:12,fontFamily:"inherit"}}>
-                Clear
-              </button>
-            )}
+            {scheduledTime&&<button onClick={()=>setScheduledTime("")}
+              style={{background:"none",border:`1px solid ${BORDER}`,borderRadius:7,padding:"10px 12px",color:MUTED,cursor:"pointer",fontSize:12,fontFamily:"inherit"}}>Clear</button>}
           </div>
-          {scheduledTime&&(
-            <div style={{fontSize:11,color:ORANGE,marginTop:6,fontWeight:700}}>
-              ⏰ {fmtTime12(scheduledTime)}
-            </div>
-          )}
+          {scheduledTime&&<div style={{fontSize:11,color:ORANGE,marginTop:6,fontWeight:700}}>⏰ {fmtTime12(scheduledTime)}</div>}
         </div>
 
-        {/* Task count */}
         <div style={{fontSize:10,color:MUTED,letterSpacing:2,fontWeight:700,marginBottom:10}}>
           TASKS · {tasks.length}{totalSecs(tasks)>0&&` · ${fmtSecs(totalSecs(tasks))} total`}
         </div>
 
-        {/* Task rows */}
         {tasks.map((t,i)=>(
-          <div key={t.id}
-            style={{background:CARD,borderRadius:10,border:`1px solid ${BORDER}`,
-              padding:"9px 12px",marginBottom:6,display:"flex",alignItems:"center",gap:8}}>
-            <div style={{display:"flex",flexDirection:"column",gap:1,flexShrink:0}}>
-              <button onClick={()=>moveUp(i)} disabled={i===0}
-                style={{background:"none",border:"none",color:i===0?BORDER:MUTED,
-                  cursor:i===0?"default":"pointer",fontSize:9,lineHeight:1,padding:"2px 4px"}}>▲</button>
-              <button onClick={()=>moveDn(i)} disabled={i===tasks.length-1}
-                style={{background:"none",border:"none",color:i===tasks.length-1?BORDER:MUTED,
-                  cursor:i===tasks.length-1?"default":"pointer",fontSize:9,lineHeight:1,padding:"2px 4px"}}>▼</button>
+          <div key={t.id} style={{marginBottom:6}}>
+            <div style={{background:CARD,borderRadius:expandedNote===t.id?"10px 10px 0 0":10,
+              border:`1px solid ${BORDER}`,padding:"9px 12px",display:"flex",alignItems:"center",gap:7}}>
+              <div style={{display:"flex",flexDirection:"column",gap:1,flexShrink:0}}>
+                <button onClick={()=>moveUp(i)} disabled={i===0} style={{background:"none",border:"none",color:i===0?BORDER:MUTED,cursor:i===0?"default":"pointer",fontSize:9,lineHeight:1,padding:"2px 4px"}}>▲</button>
+                <button onClick={()=>moveDn(i)} disabled={i===tasks.length-1} style={{background:"none",border:"none",color:i===tasks.length-1?BORDER:MUTED,cursor:i===tasks.length-1?"default":"pointer",fontSize:9,lineHeight:1,padding:"2px 4px"}}>▼</button>
+              </div>
+              <span style={{fontSize:10,color:MUTED,width:16,textAlign:"right",flexShrink:0}}>{i+1}.</span>
+              <input value={t.title} onChange={e=>updTask(t.id,"title",e.target.value)}
+                style={{flex:1,background:"transparent",border:"none",color:TEXT,fontSize:13,fontFamily:"inherit",outline:"none",minWidth:0}}/>
+              {/* Notes toggle */}
+              <button onClick={()=>setExpandedNote(expandedNote===t.id?null:t.id)}
+                style={{background:"none",border:"none",color:t.notes?ORANGE:BORDER,cursor:"pointer",
+                  fontSize:13,padding:"0 4px",lineHeight:1,flexShrink:0,transition:"color .15s"}}
+                title="Add notes">📝</button>
+              <div style={{display:"flex",alignItems:"center",gap:4,flexShrink:0}}>
+                <button onClick={()=>updTask(t.id,"seconds",Math.max(5,t.seconds-5))}
+                  style={{background:"none",border:`1px solid ${BORDER}`,borderRadius:5,width:22,height:22,color:MUTED,cursor:"pointer",fontSize:13,display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>−</button>
+                <div style={{minWidth:38,textAlign:"center",fontSize:12,color:LIME,fontWeight:800,fontVariantNumeric:"tabular-nums"}}>{fmtSecs(t.seconds)}</div>
+                <button onClick={()=>updTask(t.id,"seconds",t.seconds+5)}
+                  style={{background:"none",border:`1px solid ${BORDER}`,borderRadius:5,width:22,height:22,color:MUTED,cursor:"pointer",fontSize:13,display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>+</button>
+              </div>
+              <button onClick={()=>delTask(t.id)}
+                style={{background:"none",border:"none",color:"#FF453A33",cursor:"pointer",fontSize:14,padding:"0 2px",transition:"color .15s",lineHeight:1,flexShrink:0}}
+                onMouseEnter={e=>e.currentTarget.style.color=RED}
+                onMouseLeave={e=>e.currentTarget.style.color="#FF453A33"}>✕</button>
             </div>
-            <span style={{fontSize:10,color:MUTED,width:16,textAlign:"right",flexShrink:0}}>{i+1}.</span>
-            <input value={t.title} onChange={e=>updTask(t.id,"title",e.target.value)}
-              style={{flex:1,background:"transparent",border:"none",color:TEXT,
-                fontSize:13,fontFamily:"inherit",outline:"none",minWidth:0}}/>
-            <div style={{display:"flex",alignItems:"center",gap:4,flexShrink:0}}>
-              <button onClick={()=>updTask(t.id,"seconds",Math.max(5,t.seconds-5))}
-                style={{background:"none",border:`1px solid ${BORDER}`,borderRadius:5,
-                  width:22,height:22,color:MUTED,cursor:"pointer",fontSize:13,
-                  display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>−</button>
-              <div style={{minWidth:38,textAlign:"center",fontSize:12,color:LIME,
-                fontWeight:800,fontVariantNumeric:"tabular-nums"}}>{fmtSecs(t.seconds)}</div>
-              <button onClick={()=>updTask(t.id,"seconds",t.seconds+5)}
-                style={{background:"none",border:`1px solid ${BORDER}`,borderRadius:5,
-                  width:22,height:22,color:MUTED,cursor:"pointer",fontSize:13,
-                  display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>+</button>
-            </div>
-            <button onClick={()=>delTask(t.id)}
-              style={{background:"none",border:"none",color:"#FF453A33",cursor:"pointer",
-                fontSize:14,padding:"0 2px",transition:"color .15s",lineHeight:1,flexShrink:0}}
-              onMouseEnter={e=>e.currentTarget.style.color=RED}
-              onMouseLeave={e=>e.currentTarget.style.color="#FF453A33"}>✕</button>
+            {expandedNote===t.id&&(
+              <div style={{background:"#0a0a10",borderRadius:"0 0 10px 10px",border:`1px solid ${BORDER}`,borderTop:"none",padding:"10px 12px"}}>
+                <textarea value={t.notes||""} onChange={e=>updTask(t.id,"notes",e.target.value)}
+                  placeholder="Notes for this task (shown mid-run)…"
+                  rows={2}
+                  style={{width:"100%",background:"transparent",border:"none",color:TEXT,fontSize:13,fontFamily:"inherit",outline:"none",resize:"none",lineHeight:1.5}}/>
+              </div>
+            )}
           </div>
         ))}
 
         {tasks.length===0&&(
-          <div style={{textAlign:"center",padding:"32px 0",color:MUTED,fontSize:13,fontStyle:"italic",
-            border:`1px dashed ${BORDER}`,borderRadius:10,marginBottom:12}}>
-            No tasks yet — add one below
-          </div>
+          <div style={{textAlign:"center",padding:"32px 0",color:MUTED,fontSize:13,fontStyle:"italic",border:`1px dashed ${BORDER}`,borderRadius:10,marginBottom:12}}>No tasks yet — add one below</div>
         )}
 
         {/* Add task */}
         <div style={{background:INSET,borderRadius:10,border:`1px solid ${BORDER}`,padding:"14px",marginTop:8}}>
           <div style={{fontSize:10,color:MUTED,letterSpacing:2,marginBottom:10,fontWeight:700}}>ADD TASK</div>
-          <input ref={newTitleRef} value={newTitle} onChange={e=>setNewTitle(e.target.value)}
-            onKeyDown={e=>e.key==="Enter"&&addTask()} placeholder="Task name…"
-            style={{...inp,width:"100%",marginBottom:10}}/>
+          <input ref={newTitleRef} value={newTitle} onChange={e=>setNewTitle(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addTask()} placeholder="Task name…" style={{...inp,width:"100%",marginBottom:10}}/>
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,flexWrap:"wrap"}}>
             <span style={{fontSize:12,color:MUTED,flexShrink:0}}>Duration:</span>
-            <button onClick={()=>setNewSecs(s=>Math.max(5,s-5))}
-              style={{background:"none",border:`1px solid ${BORDER}`,borderRadius:6,
-                width:28,height:28,color:MUTED,cursor:"pointer",fontSize:14,
-                display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>−</button>
-            <span style={{fontSize:15,fontWeight:800,color:LIME,minWidth:48,textAlign:"center",
-              fontVariantNumeric:"tabular-nums",flexShrink:0}}>{fmtSecs(newSecs)}</span>
-            <button onClick={()=>setNewSecs(s=>s+5)}
-              style={{background:"none",border:`1px solid ${BORDER}`,borderRadius:6,
-                width:28,height:28,color:MUTED,cursor:"pointer",fontSize:14,
-                display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>+</button>
+            <button onClick={()=>setNewSecs(s=>Math.max(5,s-5))} style={{background:"none",border:`1px solid ${BORDER}`,borderRadius:6,width:28,height:28,color:MUTED,cursor:"pointer",fontSize:14,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>−</button>
+            <span style={{fontSize:15,fontWeight:800,color:LIME,minWidth:48,textAlign:"center",fontVariantNumeric:"tabular-nums",flexShrink:0}}>{fmtSecs(newSecs)}</span>
+            <button onClick={()=>setNewSecs(s=>s+5)} style={{background:"none",border:`1px solid ${BORDER}`,borderRadius:6,width:28,height:28,color:MUTED,cursor:"pointer",fontSize:14,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>+</button>
           </div>
           <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:12}}>
             {SEC_PRESETS.map(s=>(
               <button key={s} onClick={()=>setNewSecs(s)}
-                style={{padding:"4px 9px",borderRadius:6,fontSize:10,fontFamily:"inherit",fontWeight:700,
-                  cursor:"pointer",background:newSecs===s?LIME:CARD,
-                  color:newSecs===s?"#000":MUTED,border:`1px solid ${newSecs===s?LIME:BORDER}`}}>
+                style={{padding:"4px 9px",borderRadius:6,fontSize:10,fontFamily:"inherit",fontWeight:700,cursor:"pointer",
+                  background:newSecs===s?LIME:CARD,color:newSecs===s?"#000":MUTED,border:`1px solid ${newSecs===s?LIME:BORDER}`}}>
                 {s<60?s+"s":s%60===0?`${s/60}m`:`${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`}
               </button>
             ))}
@@ -529,30 +806,20 @@ function SprintEditor({sprint,onSave,onCancel,onDelete}){
           <button onClick={addTask}
             style={{width:"100%",padding:"10px",borderRadius:8,border:"none",
               background:newTitle.trim()?LIME:"#1a1a1a",color:newTitle.trim()?"#000":MUTED,
-              fontWeight:800,fontSize:13,cursor:newTitle.trim()?"pointer":"default",
-              fontFamily:"inherit",transition:"all .15s"}}>
+              fontWeight:800,fontSize:13,cursor:newTitle.trim()?"pointer":"default",fontFamily:"inherit",transition:"all .15s"}}>
             + Add Task
           </button>
         </div>
       </div>
 
-      {/* Footer */}
-      <div style={{padding:"12px 18px 20px",borderTop:`1px solid ${BORDER}`,
-        display:"flex",gap:8,flexShrink:0}}>
-        <button onClick={onCancel}
-          style={{flex:1,padding:"12px",borderRadius:9,border:`1px solid ${BORDER}`,
-            background:"transparent",color:MUTED,cursor:"pointer",fontFamily:"inherit",fontSize:13}}>
-          Cancel
-        </button>
+      <div style={{padding:"12px 18px 20px",borderTop:`1px solid ${BORDER}`,display:"flex",gap:8,flexShrink:0}}>
+        <button onClick={onCancel} style={{flex:1,padding:"12px",borderRadius:9,border:`1px solid ${BORDER}`,background:"transparent",color:MUTED,cursor:"pointer",fontFamily:"inherit",fontSize:13}}>Cancel</button>
         <button onClick={save} disabled={saving||!name.trim()}
           style={{flex:2,padding:"12px",borderRadius:9,border:"none",
-            background:saving||!name.trim()?"#2a2a2a":LIME,
-            color:saving||!name.trim()?MUTED:"#000",
-            cursor:saving||!name.trim()?"default":"pointer",
-            fontWeight:900,fontFamily:"inherit",fontSize:14,
+            background:saving||!name.trim()?"#2a2a2a":LIME,color:saving||!name.trim()?MUTED:"#000",
+            cursor:saving||!name.trim()?"default":"pointer",fontWeight:900,fontFamily:"inherit",fontSize:14,
             display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
-          {saving&&<Spinner size={14} color={MUTED}/>}
-          {saving?"Saving…":"Save Sprint"}
+          {saving&&<Spinner size={14} color={MUTED}/>}{saving?"Saving…":"Save Sprint"}
         </button>
       </div>
     </div>
@@ -560,38 +827,70 @@ function SprintEditor({sprint,onSave,onCancel,onDelete}){
 }
 
 /* ── Sprint Runner ─────────────────────────────────────────────── */
-function SprintRunner({sprint,onClose}){
+function SprintRunner({sprint,user,onClose,onLogRun}){
   const tasks=useMemo(()=>sprint.tasks||[],[sprint]);
-  const [taskIdx,setTaskIdx]=useState(0);
-  const [secs,setSecs]=useState(tasks[0]?.seconds||30);
-  const [elapsed,setElapsed]=useState(0);
-  const [running,setRunning]=useState(false);
-  const [phase,setPhase]=useState("idle");
+  const restore=sprint._restore;
+
+  // State — init from restore if available
+  const [taskIdx,setTaskIdx]=useState(()=>restore?.taskIdx??0);
+  const [secs,setSecs]=useState(()=>restore?.secs??(tasks[0]?.seconds||30));
+  const [elapsed,setElapsed]=useState(()=>restore?.elapsed??0);
+  const [running,setRunning]=useState(()=>!!(restore?.running));
+  const [phase,setPhase]=useState(()=>restore?.phase??"idle");
   const [ringSize,setRingSize]=useState(300);
   const [transitioning,setTransitioning]=useState(false);
+  const [expandedNote,setExpandedNote]=useState(false);
 
   const containerRef=useRef(null);
   const tickRef=useRef(null);
   const elapsedRef=useRef(null);
-  const taskIdxRef=useRef(0);
-  const runningRef=useRef(false);
+  const taskIdxRef=useRef(taskIdx);
+  const runningRef=useRef(running);
   const transitioningRef=useRef(false);
+  const phaseRef=useRef(phase);
 
   useEffect(()=>{taskIdxRef.current=taskIdx;},[taskIdx]);
   useEffect(()=>{runningRef.current=running;},[running]);
   useEffect(()=>{transitioningRef.current=transitioning;},[transitioning]);
+  useEffect(()=>{phaseRef.current=phase;},[phase]);
 
-  // Responsive ring — bigger
+  // Responsive ring
   useEffect(()=>{
     const el=containerRef.current;if(!el)return;
-    const obs=new ResizeObserver(e=>{
-      const w=e[0].contentRect.width;
-      setRingSize(Math.min(Math.max(w-12,240),420));
-    });
+    const obs=new ResizeObserver(e=>{const w=e[0].contentRect.width;setRingSize(Math.min(Math.max(w-12,240),420));});
     obs.observe(el);return()=>obs.disconnect();
   },[]);
 
-  // Elapsed counter
+  // Wake lock
+  useEffect(()=>{
+    if(phase==="running"){acqWakeLock();document.addEventListener("visibilitychange",reacqWakeLock);}
+    else{relWakeLock();document.removeEventListener("visibilitychange",reacqWakeLock);}
+    return()=>{relWakeLock();document.removeEventListener("visibilitychange",reacqWakeLock);};
+  },[phase]);
+
+  // Tab title countdown
+  useEffect(()=>{
+    const cur=tasks[taskIdx];
+    if(phase==="running"&&cur){
+      document.title=`⚡ ${fmtSecs(secs)} — ${cur.title}`;
+    }else if(phase==="done"){document.title="✓ Sprint Complete";}
+    else{document.title="SPRINT v2.3";}
+    return()=>{document.title="SPRINT v2.3";};
+  },[secs,phase,taskIdx,tasks]);
+
+  // Persist state every tick
+  useEffect(()=>{
+    if(phase==="idle"||phase==="done"){clearRunnerState();return;}
+    saveRunnerState({sprintId:sprint.id,taskIdx,secs,elapsed,phase,running});
+  },[taskIdx,secs,elapsed,phase,running]);
+
+  // Notify permission on mount
+  useEffect(()=>{askNotifPerm();},[]);
+
+  // Reset note expansion on task change
+  useEffect(()=>{setExpandedNote(false);},[taskIdx]);
+
+  // Elapsed tick
   useEffect(()=>{
     clearInterval(elapsedRef.current);
     if(running&&phase==="running"){
@@ -602,9 +901,7 @@ function SprintRunner({sprint,onClose}){
 
   const currentTask=tasks[taskIdx]||null;
   const upcomingTasks=tasks.slice(taskIdx+1);
-  const totalRemaining=useMemo(()=>
-    tasks.slice(taskIdx).reduce((a,t,i)=>a+(i===0?secs:(t.seconds||0)),0),
-  [tasks,taskIdx,secs]);
+  const totalRemaining=useMemo(()=>tasks.slice(taskIdx).reduce((a,t,i)=>a+(i===0?secs:(t.seconds||0)),0),[tasks,taskIdx,secs]);
 
   const goToTask=useCallback((idx)=>{
     clearInterval(tickRef.current);
@@ -613,106 +910,106 @@ function SprintRunner({sprint,onClose}){
       setPhase("done");setRunning(false);runningRef.current=false;
       clearInterval(elapsedRef.current);
       try{window.speechSynthesis.cancel();}catch{}
+      clearRunnerState();
       setTimeout(()=>{chime();speak("Sprint complete! Great work.");},100);
       return;
     }
     const task=tasks[idx];
     setTaskIdx(idx);setSecs(task.seconds||30);
+    showTaskNotif(task,idx+1,tasks.length);
     setTimeout(()=>speak(task.title),200);
   },[tasks]);
 
+  // Main tick
   useEffect(()=>{
     if(!running||phase!=="running")return;
     clearInterval(tickRef.current);
     tickRef.current=setInterval(()=>{
       if(!runningRef.current||transitioningRef.current)return;
       setSecs(s=>{
-        const newS=s-1;
-        if(newS===3)speak("Three");
-        else if(newS===2)speak("Two");
-        else if(newS===1)speak("One");
-        if(newS<=0){
+        const n=s-1;
+        if(n===3)speak("Three");else if(n===2)speak("Two");else if(n===1)speak("One");
+        if(n<=0){
           clearInterval(tickRef.current);
           setTransitioning(true);transitioningRef.current=true;
           beep(880,200);
-          const nextIdx=taskIdxRef.current+1;
-          const isLast=nextIdx>=tasks.length;
-          if(!isLast)speak(`Up next: ${tasks[nextIdx].title}`);
-          setTimeout(()=>goToTask(nextIdx),isLast?400:1400);
+          const next=taskIdxRef.current+1;
+          const last=next>=tasks.length;
+          if(!last)speak(`Up next: ${tasks[next].title}`);
+          setTimeout(()=>goToTask(next),last?400:1400);
           return 0;
         }
-        return newS;
+        return n;
       });
     },1000);
     return()=>clearInterval(tickRef.current);
   },[running,phase,taskIdx,tasks,goToTask]);
 
+  // Auto-start if restoring a running sprint
+  useEffect(()=>{
+    if(restore?.running&&restore?.phase==="running"&&phase==="running"){
+      setRunning(true);runningRef.current=true;
+    }
+  },[]);
+
+  // Log run when sprint completes
+  const loggedRef=useRef(false);
+  useEffect(()=>{
+    if(phase==="done"&&!loggedRef.current){
+      loggedRef.current=true;
+      onLogRun&&onLogRun(sprint.id,sprint.name,sprint.emoji||"⚡",tasks.length,totalSecs(tasks),elapsed);
+    }
+  },[phase]);
+
   const startSprint=()=>{
     if(tasks.length===0)return;
     setPhase("running");setRunning(true);runningRef.current=true;
     setTaskIdx(0);setSecs(tasks[0].seconds||30);taskIdxRef.current=0;setElapsed(0);
+    showTaskNotif(tasks[0],1,tasks.length);
     setTimeout(()=>speak(tasks[0].title),100);
   };
   const togglePause=()=>{
-    if(running){
-      setRunning(false);runningRef.current=false;
-      clearInterval(tickRef.current);clearInterval(elapsedRef.current);
-      try{window.speechSynthesis.cancel();}catch{}
-    }else{
-      setRunning(true);runningRef.current=true;
-      speak(currentTask?.title||"Resuming");
-    }
+    if(running){setRunning(false);runningRef.current=false;clearInterval(tickRef.current);clearInterval(elapsedRef.current);try{window.speechSynthesis.cancel();}catch{}}
+    else{setRunning(true);runningRef.current=true;speak(currentTask?.title||"Resuming");}
   };
   const skipTask=()=>{clearInterval(tickRef.current);goToTask(taskIdxRef.current+1);};
   const prevTask=()=>{if(taskIdx===0)return;clearInterval(tickRef.current);goToTask(taskIdxRef.current-1);};
   const stopSprint=()=>{
     clearInterval(tickRef.current);clearInterval(elapsedRef.current);
-    setRunning(false);runningRef.current=false;
-    setPhase("idle");setTaskIdx(0);setSecs(tasks[0]?.seconds||30);
-    setElapsed(0);setTransitioning(false);
+    setRunning(false);runningRef.current=false;setPhase("idle");
+    setTaskIdx(0);setSecs(tasks[0]?.seconds||30);setElapsed(0);setTransitioning(false);
+    clearRunnerState();
     try{window.speechSynthesis.cancel();}catch{}
   };
 
-  /* ── Ring — bigger R, thicker stroke ── */
+  // Ring math
   const taskTotal=currentTask?.seconds||1;
   const pct=Math.max(0,Math.min(1,secs/taskTotal));
   const ringColor=secs>30?LIME:secs>10?ORANGE:RED;
-  const R=ringSize/2*0.88;
-  const CX=ringSize/2,CY=ringSize/2;
-  const C=2*Math.PI*R;
-  const sw=Math.round(ringSize*0.09);
+  const R=ringSize/2*0.88,CX=ringSize/2,CY=ringSize/2,C=2*Math.PI*R,sw=Math.round(ringSize*0.09);
 
   /* ── Done screen ── */
   if(phase==="done"){
     return(
-      <div style={{height:"100%",display:"flex",flexDirection:"column",alignItems:"center",
-        justifyContent:"center",background:"#000",gap:16,padding:32,textAlign:"center"}}>
+      <div style={{height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"#000",gap:16,padding:32,textAlign:"center"}}>
         <div style={{fontSize:60,marginBottom:8}}>🎉</div>
         <div style={{fontSize:32,fontWeight:900,color:LIME,letterSpacing:-2}}>SPRINT COMPLETE</div>
         <div style={{fontSize:16,color:MUTED}}>{sprint.emoji||"⚡"} {sprint.name}</div>
         <div style={{display:"flex",gap:12,marginTop:8,flexWrap:"wrap",justifyContent:"center"}}>
-          <div style={{background:CARD,borderRadius:10,border:`1px solid ${BORDER}`,padding:"12px 18px"}}>
-            <div style={{fontSize:10,color:MUTED,letterSpacing:2,marginBottom:4}}>TASKS</div>
-            <div style={{fontSize:22,fontWeight:900,color:TEXT}}>{tasks.length}</div>
-          </div>
-          <div style={{background:CARD,borderRadius:10,border:`1px solid ${BORDER}`,padding:"12px 18px"}}>
-            <div style={{fontSize:10,color:MUTED,letterSpacing:2,marginBottom:4}}>ELAPSED</div>
-            <div style={{fontSize:22,fontWeight:900,color:LIME}}>{fmtSecs(elapsed)}</div>
-          </div>
-          <div style={{background:CARD,borderRadius:10,border:`1px solid ${BORDER}`,padding:"12px 18px"}}>
-            <div style={{fontSize:10,color:MUTED,letterSpacing:2,marginBottom:4}}>PLANNED</div>
-            <div style={{fontSize:22,fontWeight:900,color:ORANGE}}>{fmtSecs(totalSecs(tasks))}</div>
-          </div>
+          {[["TASKS",tasks.length,TEXT],["ELAPSED",fmtSecs(elapsed),LIME],["PLANNED",fmtSecs(totalSecs(tasks)),ORANGE]].map(([label,val,col])=>(
+            <div key={label} style={{background:CARD,borderRadius:10,border:`1px solid ${BORDER}`,padding:"12px 18px"}}>
+              <div style={{fontSize:10,color:MUTED,letterSpacing:2,marginBottom:4}}>{label}</div>
+              <div style={{fontSize:22,fontWeight:900,color:col}}>{val}</div>
+            </div>
+          ))}
         </div>
         <div style={{display:"flex",flexDirection:"column",gap:10,width:"100%",maxWidth:300,marginTop:16}}>
           <button onClick={stopSprint}
-            style={{width:"100%",padding:"13px",borderRadius:10,border:"none",
-              background:LIME,color:"#000",fontWeight:900,fontSize:15,cursor:"pointer",fontFamily:"inherit"}}>
+            style={{width:"100%",padding:"13px",borderRadius:10,border:"none",background:LIME,color:"#000",fontWeight:900,fontSize:15,cursor:"pointer",fontFamily:"inherit"}}>
             ↺ Run Again
           </button>
           <button onClick={onClose}
-            style={{width:"100%",padding:"12px",borderRadius:10,border:`1px solid ${BORDER}`,
-              background:"transparent",color:MUTED,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>
+            style={{width:"100%",padding:"12px",borderRadius:10,border:`1px solid ${BORDER}`,background:"transparent",color:MUTED,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>
             ← Back to Sprints
           </button>
         </div>
@@ -724,96 +1021,89 @@ function SprintRunner({sprint,onClose}){
     <div style={{height:"100%",display:"flex",flexDirection:"column",background:"#000"}}>
 
       {/* Header */}
-      <div style={{padding:"14px 18px",borderBottom:`1px solid ${BORDER}`,
-        display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
-        <button onClick={()=>{stopSprint();onClose();}}
-          style={{background:"none",border:"none",color:MUTED,fontSize:26,cursor:"pointer",
-            lineHeight:1,padding:"0 4px",marginLeft:-4}}>‹</button>
+      <div style={{padding:"14px 18px",borderBottom:`1px solid ${BORDER}`,display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
+        <button onClick={()=>{stopSprint();onClose();}} style={{background:"none",border:"none",color:MUTED,fontSize:26,cursor:"pointer",lineHeight:1,padding:"0 4px",marginLeft:-4}}>‹</button>
         <span style={{fontSize:20,flexShrink:0}}>{sprint.emoji||"⚡"}</span>
         <div style={{flex:1,minWidth:0}}>
-          <div style={{fontWeight:800,fontSize:14,color:TEXT,
-            overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{sprint.name}</div>
-          <div style={{fontSize:11,color:MUTED,marginTop:1}}>
-            {fmtSecs(totalRemaining)} remaining · {tasks.length} tasks
-          </div>
+          <div style={{fontWeight:800,fontSize:14,color:TEXT,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{sprint.name}</div>
+          <div style={{fontSize:11,color:MUTED,marginTop:1}}>{fmtSecs(totalRemaining)} remaining · {tasks.length} tasks</div>
         </div>
         {phase==="running"&&(
-          <button onClick={stopSprint}
-            style={{padding:"5px 12px",borderRadius:7,border:`1px solid ${BORDER}`,
-              background:"transparent",color:MUTED,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
-            Stop
-          </button>
+          <button onClick={stopSprint} style={{padding:"5px 12px",borderRadius:7,border:`1px solid ${BORDER}`,background:"transparent",color:MUTED,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>Stop</button>
         )}
       </div>
 
       {/* Body */}
-      <div style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",
-        alignItems:"center",padding:"16px 12px 28px",gap:16}}>
+      <div style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",alignItems:"center",padding:"16px 12px 28px",gap:16}}>
 
         {/* Progress dots */}
         {tasks.length>0&&(
-          <div style={{display:"flex",gap:5,flexWrap:"wrap",justifyContent:"center",maxWidth:400}}>
+          <div style={{display:"flex",gap:5,flexWrap:"wrap",justifyContent:"center",maxWidth:420}}>
             {tasks.map((t,i)=>(
               <div key={t.id||i} style={{width:8,height:8,borderRadius:"50%",
                 background:i<taskIdx?GREEN:i===taskIdx?(phase==="running"?LIME:"#555"):"#2a2a2a",
-                transition:"background .4s",
-                boxShadow:i===taskIdx&&phase==="running"?`0 0 10px ${LIME}55`:"none"}}/>
+                transition:"background .4s",boxShadow:i===taskIdx&&phase==="running"?`0 0 10px ${LIME}55`:"none"}}/>
             ))}
           </div>
         )}
 
-        {/* Current task label */}
+        {/* Current task */}
         {currentTask&&(
-          <div style={{textAlign:"center",padding:"0 8px"}}>
+          <div style={{textAlign:"center",padding:"0 8px",width:"100%",maxWidth:420}}>
             <div style={{fontSize:10,color:MUTED,letterSpacing:2,marginBottom:8,fontWeight:700}}>
               {phase==="idle"?"READY TO RUN":transitioning?"FINISHING…":running?"NOW RUNNING":"PAUSED"}
               {" · "}{taskIdx+1}/{tasks.length}
             </div>
-            <div style={{fontSize:22,fontWeight:900,color:TEXT,lineHeight:1.25,
-              transition:"opacity .3s",opacity:transitioning?0.3:1}}>
+            <div style={{fontSize:22,fontWeight:900,color:TEXT,lineHeight:1.25,transition:"opacity .3s",opacity:transitioning?0.3:1}}>
               {currentTask.title}
             </div>
-            {phase==="idle"&&(
-              <div style={{fontSize:12,color:MUTED,marginTop:6}}>
-                {fmtSecs(currentTask.seconds)} · tap Start when ready
+            {phase==="idle"&&<div style={{fontSize:12,color:MUTED,marginTop:6}}>{fmtSecs(currentTask.seconds)} · tap Start when ready</div>}
+
+            {/* Notes toggle */}
+            {currentTask.notes&&(
+              <div style={{marginTop:10}}>
+                <button onClick={()=>setExpandedNote(e=>!e)}
+                  style={{padding:"5px 14px",borderRadius:7,border:`1px solid ${expandedNote?ORANGE:BORDER}`,
+                    background:expandedNote?"#1a0e00":"transparent",color:expandedNote?ORANGE:MUTED,
+                    fontSize:11,cursor:"pointer",fontFamily:"inherit",fontWeight:600}}>
+                  📝 {expandedNote?"Hide Notes":"View Notes"}
+                </button>
+                {expandedNote&&(
+                  <div className="slide-down"
+                    style={{marginTop:8,padding:"10px 14px",borderRadius:9,
+                      background:"#0e0900",border:`1px solid ${ORANGE}33`,
+                      fontSize:13,color:TEXT,lineHeight:1.6,textAlign:"left",whiteSpace:"pre-wrap"}}>
+                    {currentTask.notes}
+                  </div>
+                )}
               </div>
             )}
           </div>
         )}
 
-        {/* BIG Ring */}
+        {/* Big ring */}
         <div ref={containerRef} style={{width:"100%",maxWidth:440,flexShrink:0}}>
           <div style={{position:"relative",width:ringSize,height:ringSize,margin:"0 auto"}}>
             <svg width={ringSize} height={ringSize} style={{transform:"rotate(-90deg)"}}>
               <circle cx={CX} cy={CY} r={R} fill="none" stroke="#1a1a1a" strokeWidth={sw}/>
               <circle cx={CX} cy={CY} r={R} fill="none"
                 stroke={phase==="running"?(transitioning?ORANGE:ringColor):"#2a2a2a"}
-                strokeWidth={sw} strokeLinecap="round"
-                strokeDasharray={C} strokeDashoffset={C*(1-pct)}
+                strokeWidth={sw} strokeLinecap="round" strokeDasharray={C} strokeDashoffset={C*(1-pct)}
                 style={{transition:"stroke-dashoffset .85s linear,stroke .35s"}}/>
             </svg>
-            {/* Center */}
-            <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",
-              alignItems:"center",justifyContent:"center",gap:3}}>
-              <div style={{fontSize:Math.round(ringSize*0.25),fontWeight:900,lineHeight:1,
-                fontVariantNumeric:"tabular-nums",
+            <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:3}}>
+              <div style={{fontSize:Math.round(ringSize*0.25),fontWeight:900,lineHeight:1,fontVariantNumeric:"tabular-nums",
                 color:phase==="running"?(transitioning?ORANGE:ringColor):"#333"}}>
                 {phase==="idle"?"GO":phase==="done"?"✓":fmtSecs(secs)}
               </div>
               {phase==="running"&&!transitioning&&(
-                <div style={{fontSize:Math.round(ringSize*0.042),color:MUTED,letterSpacing:1}}>
-                  {running?"seconds left":"paused"}
-                </div>
+                <div style={{fontSize:Math.round(ringSize*0.042),color:MUTED,letterSpacing:1}}>{running?"seconds left":"paused"}</div>
               )}
               {transitioning&&(
-                <div style={{fontSize:Math.round(ringSize*0.042),color:ORANGE,letterSpacing:1}} className="pulse">
-                  NEXT UP…
-                </div>
+                <div style={{fontSize:Math.round(ringSize*0.042),color:ORANGE,letterSpacing:1}} className="pulse">NEXT UP…</div>
               )}
-              {/* Elapsed — dim, at bottom of ring interior */}
               {phase==="running"&&elapsed>0&&(
-                <div style={{fontSize:Math.round(ringSize*0.037),color:"#333",
-                  letterSpacing:1,marginTop:6,fontVariantNumeric:"tabular-nums"}}>
+                <div style={{fontSize:Math.round(ringSize*0.037),color:"#2a2a2a",letterSpacing:1,marginTop:6,fontVariantNumeric:"tabular-nums"}}>
                   {fmtSecs(elapsed)} elapsed
                 </div>
               )}
@@ -826,59 +1116,47 @@ function SprintRunner({sprint,onClose}){
           {phase==="idle"&&(
             <button onClick={startSprint} disabled={tasks.length===0}
               style={{padding:"14px 52px",borderRadius:10,border:"none",
-                background:tasks.length===0?"#2a2a2a":LIME,
-                color:tasks.length===0?MUTED:"#000",
+                background:tasks.length===0?"#2a2a2a":LIME,color:tasks.length===0?MUTED:"#000",
                 fontWeight:900,fontSize:17,cursor:tasks.length===0?"default":"pointer",fontFamily:"inherit"}}>
               ▶ Start Sprint
             </button>
           )}
           {phase==="running"&&(<>
             <button onClick={prevTask} disabled={taskIdx===0||transitioning}
-              style={{width:48,height:48,borderRadius:"50%",border:`1px solid ${BORDER}`,
-                background:CARD2,color:taskIdx===0||transitioning?BORDER:MUTED,
-                cursor:taskIdx===0||transitioning?"default":"pointer",
+              style={{width:48,height:48,borderRadius:"50%",border:`1px solid ${BORDER}`,background:CARD2,
+                color:taskIdx===0||transitioning?BORDER:MUTED,cursor:taskIdx===0||transitioning?"default":"pointer",
                 fontSize:15,display:"flex",alignItems:"center",justifyContent:"center"}}>◀</button>
             <button onClick={togglePause} disabled={transitioning}
-              style={{width:64,height:64,borderRadius:"50%",border:"none",
-                background:transitioning?"#2a2a2a":LIME,color:"#000",
-                fontSize:24,cursor:transitioning?"default":"pointer",
+              style={{width:64,height:64,borderRadius:"50%",border:"none",background:transitioning?"#2a2a2a":LIME,
+                color:"#000",fontSize:24,cursor:transitioning?"default":"pointer",
                 display:"flex",alignItems:"center",justifyContent:"center",fontWeight:900}}>
               {running?"⏸":"▶"}
             </button>
             <button onClick={skipTask} disabled={transitioning}
-              style={{width:48,height:48,borderRadius:"50%",border:`1px solid ${BORDER}`,
-                background:CARD2,color:transitioning?BORDER:MUTED,
-                cursor:transitioning?"default":"pointer",
+              style={{width:48,height:48,borderRadius:"50%",border:`1px solid ${BORDER}`,background:CARD2,
+                color:transitioning?BORDER:MUTED,cursor:transitioning?"default":"pointer",
                 fontSize:15,display:"flex",alignItems:"center",justifyContent:"center"}}>▶▶</button>
           </>)}
         </div>
 
         {phase==="idle"&&(
           <div style={{fontSize:11,color:"#2a2a2a",textAlign:"center",lineHeight:1.7,maxWidth:300}}>
-            🔊 Each task is announced aloud. Keep volume on.
+            🔊 Each task announced aloud · 🔒 Screen stays on · 📌 Tab title shows countdown
           </div>
         )}
 
-        {/* ALL upcoming tasks */}
+        {/* All upcoming */}
         {upcomingTasks.length>0&&(
           <div style={{width:"100%",maxWidth:440}}>
-            <div style={{fontSize:10,color:MUTED,letterSpacing:2,marginBottom:8,fontWeight:700}}>
-              UPCOMING · {upcomingTasks.length}
-            </div>
+            <div style={{fontSize:10,color:MUTED,letterSpacing:2,marginBottom:8,fontWeight:700}}>UPCOMING · {upcomingTasks.length}</div>
             {upcomingTasks.map((t,i)=>(
               <div key={t.id||i}
                 style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",
                   borderRadius:9,background:CARD,border:`1px solid ${BORDER}`,marginBottom:5}}>
-                <span style={{fontSize:10,color:MUTED,width:18,textAlign:"right",flexShrink:0}}>
-                  {taskIdx+2+i}.
-                </span>
-                <span style={{flex:1,fontSize:13,color:TEXT,
-                  overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-                  {t.title}
-                </span>
-                <span style={{fontSize:11,color:ORANGE,flexShrink:0,fontVariantNumeric:"tabular-nums"}}>
-                  {fmtSecs(t.seconds||0)}
-                </span>
+                <span style={{fontSize:10,color:MUTED,width:18,textAlign:"right",flexShrink:0}}>{taskIdx+2+i}.</span>
+                <span style={{flex:1,fontSize:13,color:TEXT,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.title}</span>
+                {t.notes&&<span style={{fontSize:11,color:ORANGE,flexShrink:0}}>📝</span>}
+                <span style={{fontSize:11,color:ORANGE,flexShrink:0,fontVariantNumeric:"tabular-nums"}}>{fmtSecs(t.seconds||0)}</span>
               </div>
             ))}
           </div>
@@ -893,10 +1171,7 @@ function SprintRunner({sprint,onClose}){
                 style={{display:"flex",alignItems:"center",gap:10,padding:"7px 12px",
                   borderRadius:9,background:"#091409",border:`1px solid #30D15822`,marginBottom:4}}>
                 <span style={{color:GREEN,fontSize:11,flexShrink:0}}>✓</span>
-                <span style={{flex:1,fontSize:12,color:"#30D158aa",
-                  textDecoration:"line-through",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
-                  {t.title}
-                </span>
+                <span style={{flex:1,fontSize:12,color:"#30D158aa",textDecoration:"line-through",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.title}</span>
                 <span style={{fontSize:10,color:"#30D15866",flexShrink:0}}>{fmtSecs(t.seconds||0)}</span>
               </div>
             ))}
@@ -915,48 +1190,67 @@ function App(){
   const [loadingList,setLoadingList]=useState(true);
   const [editTarget,setEditTarget]=useState(undefined);
   const [runTarget,setRunTarget]=useState(null);
+  const [settings,setSettings]=useState({});
+  const [showHistory,setShowHistory]=useState(false);
+  const [showSettings,setShowSettings]=useState(false);
 
   const loadSprints=useCallback(async(u)=>{
     setLoadingList(true);
     const uid=(u||user)?.id;if(!uid)return;
-    const{data,error}=await db.from("sprints_v2").select("*").eq("user_id",uid)
-      .order("created_at",{ascending:true});
+    const{data,error}=await db.from("sprints_v2").select("*").eq("user_id",uid).order("created_at",{ascending:true});
     if(!error)setSprints(data||[]);
     setLoadingList(false);
   },[user]);
 
   useEffect(()=>{
     db.auth.getSession().then(({data:{session}})=>{
-      if(session){setUser(session.user);setScreen("list");loadSprints(session.user);}
-      else setScreen("auth");
+      if(session){
+        setUser(session.user);
+        const s=loadSettings(session.user.id);
+        setSettings(s);
+        setScreen("list");
+        loadSprints(session.user);
+      }else setScreen("auth");
     });
     const{data:{subscription}}=db.auth.onAuthStateChange((_,session)=>{
-      if(session){setUser(session.user);setScreen("list");loadSprints(session.user);}
-      else{setUser(null);setSprints([]);setScreen("auth");}
+      if(session){
+        setUser(session.user);
+        setSettings(loadSettings(session.user.id));
+        setScreen("list");
+        loadSprints(session.user);
+      }else{setUser(null);setSprints([]);setScreen("auth");}
     });
     return()=>subscription.unsubscribe();
   },[]);
 
+  // Restore running sprint after reload
+  useEffect(()=>{
+    if(screen!=="list"||sprints.length===0||runTarget)return;
+    const saved=loadRunnerState();
+    if(!saved?.sprintId)return;
+    const sp=sprints.find(s=>s.id===saved.sprintId);
+    if(!sp)return;
+    // Advance state to account for time elapsed while away
+    const advanced=advanceState(saved,sp.tasks||[]);
+    if(advanced.phase==="done"){clearRunnerState();return;}
+    setRunTarget({...sp,_restore:advanced});
+    setScreen("run");
+  },[screen,sprints]);
+
   const saveSprint=async data=>{
     const uid=user?.id;if(!uid)return;
     if(data.id){
-      await db.from("sprints_v2")
-        .update({name:data.name,emoji:data.emoji,scheduled_time:data.scheduled_time,tasks:data.tasks})
-        .eq("id",data.id).eq("user_id",uid);
+      await db.from("sprints_v2").update({name:data.name,emoji:data.emoji,scheduled_time:data.scheduled_time,tasks:data.tasks}).eq("id",data.id).eq("user_id",uid);
     }else{
-      await db.from("sprints_v2")
-        .insert({user_id:uid,name:data.name,emoji:data.emoji,
-          scheduled_time:data.scheduled_time||null,tasks:data.tasks||[]});
+      await db.from("sprints_v2").insert({user_id:uid,name:data.name,emoji:data.emoji,scheduled_time:data.scheduled_time||null,tasks:data.tasks||[]});
     }
-    await loadSprints(user);
-    setEditTarget(undefined);setScreen("list");
+    await loadSprints(user);setEditTarget(undefined);setScreen("list");
   };
 
   const deleteSprint=async()=>{
     if(!editTarget?.id)return;
     await db.from("sprints_v2").delete().eq("id",editTarget.id).eq("user_id",user.id);
-    await loadSprints(user);
-    setEditTarget(undefined);setScreen("list");
+    await loadSprints(user);setEditTarget(undefined);setScreen("list");
   };
 
   const handleDelete=async(id,name)=>{
@@ -965,26 +1259,65 @@ function App(){
     await loadSprints(user);
   };
 
+  const handleDuplicate=async sp=>{
+    const uid=user?.id;if(!uid)return;
+    await db.from("sprints_v2").insert({
+      user_id:uid,name:`${sp.name} (copy)`,emoji:sp.emoji,
+      scheduled_time:sp.scheduled_time||null,
+      tasks:(sp.tasks||[]).map(t=>({...t,id:genId()}))
+    });
+    await loadSprints(user);
+  };
+
+  const logRun=async(sprintId,sprintName,sprintEmoji,taskCount,plannedSecs,elapsedSecs)=>{
+    try{
+      await db.from("sprint_runs").insert({
+        user_id:user.id,sprint_id:sprintId,sprint_name:sprintName,
+        sprint_emoji:sprintEmoji,task_count:taskCount,
+        planned_secs:plannedSecs,elapsed_secs:elapsedSecs
+      });
+    }catch{}
+  };
+
+  const saveSettingsAndClose=s=>{
+    setSettings(s);
+    if(user?.id)persistSettings(user.id,s);
+    setShowSettings(false);
+  };
+
   if(screen==="loading")return(
-    <div style={{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",
-      background:"#000",flexDirection:"column",gap:16}}>
+    <div style={{height:"100%",display:"flex",alignItems:"center",justifyContent:"center",background:"#000",flexDirection:"column",gap:16}}>
       <div style={{fontSize:36,fontWeight:900,color:LIME}}>⚡</div><Spinner size={22}/>
     </div>
   );
-  if(screen==="auth")return<AuthScreen onAuth={u=>{setUser(u);setScreen("list");loadSprints(u);}}/>;
-  if(screen==="run"&&runTarget)return<SprintRunner sprint={runTarget} onClose={()=>{setRunTarget(null);setScreen("list");}}/>;
-  if(screen==="edit")return(
-    <SprintEditor sprint={editTarget} onSave={saveSprint}
-      onCancel={()=>{setEditTarget(undefined);setScreen("list");}}
-      onDelete={deleteSprint}/>
+  if(screen==="auth")return<AuthScreen onAuth={u=>{setUser(u);setSettings(loadSettings(u.id));setScreen("list");loadSprints(u);}}/>;
+
+  if(screen==="run"&&runTarget)return(
+    <>
+      <SprintRunner sprint={runTarget} user={user} onClose={()=>{setRunTarget(null);setScreen("list");loadSprints(user);}} onLogRun={logRun}/>
+      {/* Log run when done (we do it inside the runner via useEffect on phase change) */}
+    </>
   );
+
+  if(screen==="edit")return(
+    <SprintEditor sprint={editTarget} onSave={saveSprint} onCancel={()=>{setEditTarget(undefined);setScreen("list");}} onDelete={deleteSprint}/>
+  );
+
   return(
-    <SprintList user={user} sprints={sprints} loading={loadingList}
-      onRun={sp=>{setRunTarget(sp);setScreen("run");}}
-      onEdit={sp=>{setEditTarget(sp);setScreen("edit");}}
-      onCreate={()=>{setEditTarget(undefined);setScreen("edit");}}
-      onDelete={handleDelete}
-      onRefresh={()=>loadSprints(user)}/>
+    <>
+      <SprintList user={user} sprints={sprints} loading={loadingList} settings={settings}
+        onRun={sp=>{setRunTarget(sp);setScreen("run");}}
+        onEdit={sp=>{setEditTarget(sp);setScreen("edit");}}
+        onCreate={()=>{setEditTarget(undefined);setScreen("edit");}}
+        onDuplicate={handleDuplicate}
+        onDelete={handleDelete}
+        onRefresh={()=>loadSprints(user)}
+        onShowHistory={()=>setShowHistory(true)}
+        onShowSettings={()=>setShowSettings(true)}
+      />
+      {showHistory&&<HistoryPanel user={user} onClose={()=>setShowHistory(false)}/>}
+      {showSettings&&<SettingsPanel settings={settings} onSave={saveSettingsAndClose} onClose={()=>setShowSettings(false)}/>}
+    </>
   );
 }
 
