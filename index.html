@@ -134,26 +134,6 @@ const SKEY_FN=uid=>`sprint_settings_${uid}`;
 const loadSettings=uid=>{try{return JSON.parse(localStorage.getItem(SKEY_FN(uid))||'{}')}catch{return{}}};
 const persistSettings=(uid,s)=>{try{localStorage.setItem(SKEY_FN(uid),JSON.stringify(s))}catch{}};
 
-/* ── Done-today (reset-hour aware) ────────────────────────────── */
-const todayKey=(resetHour=4)=>{
-  const now=new Date();
-  const reset=new Date(now);reset.setHours(resetHour,0,0,0);
-  if(now<reset)reset.setDate(reset.getDate()-1);
-  return reset.toISOString().slice(0,10);
-};
-const getDoneToday=(resetHour=4)=>{
-  try{
-    const obj=JSON.parse(localStorage.getItem("sprint_done_v2")||"{}");
-    const today=todayKey(resetHour);
-    Object.keys(obj).forEach(k=>{if(obj[k]!==today)delete obj[k];});
-    return obj;
-  }catch{return{};}
-};
-const markDoneToday=(id,done,resetHour=4)=>{
-  const obj=getDoneToday(resetHour);
-  if(done)obj[id]=todayKey(resetHour);else delete obj[id];
-  try{localStorage.setItem("sprint_done_v2",JSON.stringify(obj))}catch{}
-};
 
 /* ── Sprint order (localStorage) ──────────────────────────────── */
 const getOrder=uid=>{try{return JSON.parse(localStorage.getItem(`sprint_order_${uid}`)||"null")}catch{return null}};
@@ -438,42 +418,46 @@ function InstallBanner({onDismiss}){
   );
 }
 
-/* ── Per-sprint task skip state (resets daily) ─────────────────── */
-const getSkipped=(sprintId,resetHour=4)=>{
-  try{
-    const obj=JSON.parse(localStorage.getItem("sprint_skipped_v2")||"{}");
-    const today=todayKey(resetHour);
-    Object.keys(obj).forEach(k=>{if(obj[k].day!==today)delete obj[k];});
-    return new Set(obj[sprintId]?.ids||[]);
-  }catch{return new Set();}
+/* ── Daily state (done + skipped) — Supabase backed ───────────── */
+const todayKey=(resetHour=4)=>{
+  const now=new Date();
+  const reset=new Date(now);reset.setHours(resetHour,0,0,0);
+  if(now<reset)reset.setDate(reset.getDate()-1);
+  return reset.toISOString().slice(0,10);
 };
-const saveSkipped=(sprintId,ids,resetHour=4)=>{
-  try{
-    const obj=JSON.parse(localStorage.getItem("sprint_skipped_v2")||"{}");
-    const today=todayKey(resetHour);
-    Object.keys(obj).forEach(k=>{if(obj[k].day!==today)delete obj[k];});
-    if(ids.size===0)delete obj[sprintId];
-    else obj[sprintId]={day:today,ids:[...ids]};
-    localStorage.setItem("sprint_skipped_v2",JSON.stringify(obj));
-  }catch{}
+const getLocalDS=(id)=>{try{return JSON.parse(localStorage.getItem(`ds_${id}`)||"null")}catch{return null}};
+const setLocalDS=(id,obj)=>{try{localStorage.setItem(`ds_${id}`,JSON.stringify(obj))}catch{}};
+
+const freshDS=()=>({date:null,done:false,skipped:[]});
+
+// Merge supabase daily_state with today's reset logic
+const resolveDS=(raw,resetHour=4)=>{
+  if(!raw||!raw.date)return freshDS();
+  const today=todayKey(resetHour);
+  if(raw.date!==today)return freshDS();
+  return{date:raw.date,done:!!raw.done,skipped:Array.isArray(raw.skipped)?raw.skipped:[]};
 };
 
 /* ── Sprint Preview (tap card body to open) ────────────────────── */
-function SprintPreview({sprint,settings,onClose,onRun}){
+function SprintPreview({sprint,settings,onClose,onRun,onSaveSkipped}){
   const resetHour=settings.resetHour??4;
-  const [skipped,setSkipped]=useState(()=>getSkipped(sprint.id,resetHour));
   const tasks=sprint.tasks||[];
+  // Init skipped from sprint.daily_state (cross-device)
+  const [skipped,setSkipped]=useState(()=>{
+    const ds=resolveDS(sprint.daily_state,resetHour);
+    return new Set(ds.skipped||[]);
+  });
   const activeTasks=tasks.filter(t=>!skipped.has(t.id));
 
   const toggle=id=>{
     setSkipped(prev=>{
       const next=new Set(prev);
       if(next.has(id))next.delete(id);else next.add(id);
-      saveSkipped(sprint.id,next,resetHour);
+      onSaveSkipped(sprint.id,[...next]);
       return next;
     });
   };
-  const resetAll=()=>{setSkipped(new Set());saveSkipped(sprint.id,new Set(),resetHour);};
+  const resetAll=()=>{setSkipped(new Set());onSaveSkipped(sprint.id,[]);};
 
   return(
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.82)",zIndex:500,display:"flex",alignItems:"flex-end"}}
@@ -557,19 +541,20 @@ function SprintPreview({sprint,settings,onClose,onRun}){
 }
 
 /* ── Sprint List ───────────────────────────────────────────────── */
-function SprintList({user,sprints,loading,settings,onRun,onEdit,onCreate,onDuplicate,onDelete,onRefresh,onShowHistory,onShowSettings,onPreview}){
+function SprintList({user,sprints,loading,settings,onRun,onEdit,onCreate,onDuplicate,onDelete,onRefresh,onShowHistory,onShowSettings,onPreview,onToggleDone}){
   const resetHour=settings.resetHour??4;
-  const [doneMap,setDoneMap]=useState(()=>getDoneToday(resetHour));
+
+  // Derive done state from sprint.daily_state (server-backed, cross-device)
+  const doneMap=useMemo(()=>{
+    const m={};
+    sprints.forEach(s=>{const ds=resolveDS(s.daily_state,resetHour);m[s.id]=ds.done;});
+    return m;
+  },[sprints,resetHour]);
+
   const [orderIds,setOrderIds]=useState(()=>getOrder(user?.id));
   const [showInstall,setShowInstall]=useState(()=>{try{return!localStorage.getItem("sprint_install_dismissed")}catch{return true}});
 
-  // Refresh doneMap when resetHour changes
-  useEffect(()=>setDoneMap(getDoneToday(resetHour)),[resetHour]);
-
-  const toggleDone=id=>{
-    markDoneToday(id,!doneMap[id],resetHour);
-    setDoneMap(getDoneToday(resetHour));
-  };
+  const toggleDone=id=>onToggleDone(id,!doneMap[id]);
 
   // Apply manual order, then sort by scheduled_time within
   const displayed=useMemo(()=>{
@@ -949,33 +934,33 @@ function SprintRunner({sprint,user,onClose,onLogRun,onComplete}){
   const tasks=useMemo(()=>sprint.tasks||[],[sprint]);
   const restore=sprint._restore;
 
-  // State — init from restore if available
-  const [taskIdx,setTaskIdx]=useState(()=>restore?.taskIdx??0);
-  const [secs,setSecs]=useState(()=>restore?.secs??(tasks[0]?.seconds||30));
-  const [elapsed,setElapsed]=useState(()=>restore?.elapsed??0);
-  const [running,setRunning]=useState(()=>!!(restore?.running));
+  // Display state — timer never reads these back
+  const [dispIdx,setDispIdx]=useState(()=>restore?.taskIdx??0);
+  const [dispSecs,setDispSecs]=useState(()=>restore?.secs??(tasks[0]?.seconds||30));
+  const [dispElapsed,setDispElapsed]=useState(()=>restore?.elapsed??0);
   const [phase,setPhase]=useState(()=>restore?.phase??"idle");
-  const [ringSize,setRingSize]=useState(300);
+  const [isRunning,setIsRunning]=useState(false);
   const [transitioning,setTransitioning]=useState(false);
-  const [expandedNote,setExpandedNote]=useState(false);
   const [snapRing,setSnapRing]=useState(false);
+  const [expandedNote,setExpandedNote]=useState(false);
+  const [ringSize,setRingSize]=useState(300);
+
+  // Single mutable timer object — interval owns this entirely
+  const T=useRef({
+    running:false,transitioning:false,
+    secs:restore?.secs??(tasks[0]?.seconds||30),
+    taskIdx:restore?.taskIdx??0,
+    elapsed:restore?.elapsed??0,
+    tasks,
+  });
 
   const containerRef=useRef(null);
   const tickRef=useRef(null);
-  const elapsedRef=useRef(null);
-  const taskIdxRef=useRef(taskIdx);
-  const secsRef=useRef(secs);
-  const tasksRef=useRef(tasks);
-  const runningRef=useRef(running);
-  const transitioningRef=useRef(false);
-  const phaseRef=useRef(phase);
+  const loggedRef=useRef(false);
+  // Stable ref so setTimeout closures always call latest goToTask
+  const gotoRef=useRef(null);
 
-  useEffect(()=>{taskIdxRef.current=taskIdx;},[taskIdx]);
-  useEffect(()=>{secsRef.current=secs;},[secs]);
-  useEffect(()=>{tasksRef.current=tasks;},[tasks]);
-  useEffect(()=>{runningRef.current=running;},[running]);
-  useEffect(()=>{transitioningRef.current=transitioning;},[transitioning]);
-  useEffect(()=>{phaseRef.current=phase;},[phase]);
+  useEffect(()=>{T.current.tasks=tasks;},[tasks]);
 
   // Responsive ring
   useEffect(()=>{
@@ -984,172 +969,139 @@ function SprintRunner({sprint,user,onClose,onLogRun,onComplete}){
     obs.observe(el);return()=>obs.disconnect();
   },[]);
 
-  // Wake lock
+  useEffect(()=>{askNotifPerm();},[]);
+  useEffect(()=>()=>{clearInterval(tickRef.current);relWakeLock();},[]);
+
   useEffect(()=>{
     if(phase==="running"){acqWakeLock();document.addEventListener("visibilitychange",reacqWakeLock);}
     else{relWakeLock();document.removeEventListener("visibilitychange",reacqWakeLock);}
     return()=>{relWakeLock();document.removeEventListener("visibilitychange",reacqWakeLock);};
   },[phase]);
 
-  // Tab title countdown
   useEffect(()=>{
-    const cur=tasks[taskIdx];
-    if(phase==="running"&&cur){
-      document.title=`⚡ ${fmtSecs(secs)} — ${cur.title}`;
-    }else if(phase==="done"){document.title="✓ Sprint Complete";}
-    else{document.title="SPRINT v2.3";}
-    return()=>{document.title="SPRINT v2.3";};
-  },[secs,phase,taskIdx,tasks]);
+    if(phase==="running"){const cur=tasks[dispIdx];if(cur)document.title=`⚡ ${fmtSecs(dispSecs)} — ${cur.title}`;}
+    else if(phase==="done"){document.title="\u2713 Sprint Complete";}
+    else{document.title="SPRINT v2.4";}
+    return()=>{document.title="SPRINT v2.4";};
+  },[dispSecs,phase,dispIdx,tasks]);
 
-  // Persist state every tick
   useEffect(()=>{
     if(phase==="idle"||phase==="done"){clearRunnerState();return;}
-    saveRunnerState({sprintId:sprint.id,taskIdx,secs,elapsed,phase,running});
-  },[taskIdx,secs,elapsed,phase,running]);
+    saveRunnerState({sprintId:sprint.id,taskIdx:dispIdx,secs:dispSecs,elapsed:dispElapsed,phase,running:T.current.running});
+  },[dispIdx,dispSecs,dispElapsed,phase]);
 
-  // Notify permission on mount
-  useEffect(()=>{askNotifPerm();},[]);
-
-  // Reset note expansion on task change
-  useEffect(()=>{setExpandedNote(false);},[taskIdx]);
-
-  // Elapsed tick
-  useEffect(()=>{
-    clearInterval(elapsedRef.current);
-    if(running&&phase==="running"){
-      elapsedRef.current=setInterval(()=>setElapsed(e=>e+1),1000);
-    }
-    return()=>clearInterval(elapsedRef.current);
-  },[running,phase]);
-
-  const currentTask=tasks[taskIdx]||null;
-  const upcomingTasks=tasks.slice(taskIdx+1);
-  const totalRemaining=useMemo(()=>tasks.slice(taskIdx).reduce((a,t,i)=>a+(i===0?secs:(t.seconds||0)),0),[tasks,taskIdx,secs]);
-
-  const goToTask=useCallback((idx)=>{
-    // Sync ref updates FIRST so the live interval reads correct values immediately
-    transitioningRef.current=false;
-
-    if(idx>=tasks.length){
-      // Sprint done — only place we actually kill the interval
-      clearInterval(tickRef.current);
-      clearInterval(elapsedRef.current);
-      setTransitioning(false);
-      setPhase("done");setRunning(false);runningRef.current=false;
-      try{window.speechSynthesis.cancel();}catch{}
-      clearRunnerState();
-      setTimeout(()=>{chime();speak("Sprint complete! Great work.");},100);
-      return;
-    }
-    const task=tasks[idx];
-    // Sync ref updates so interval reads new values on very next tick
-    secsRef.current=task.seconds||30;
-    taskIdxRef.current=idx;
-    // Snap ring instantly then re-enable smooth transition
-    setSnapRing(true);
-    requestAnimationFrame(()=>requestAnimationFrame(()=>setSnapRing(false)));
-    // Async state updates (batched)
-    setTransitioning(false);
-    setTaskIdx(idx);
-    setSecs(task.seconds||30);
-    showTaskNotif(task,idx+1,tasks.length);
-    setTimeout(()=>speak(task.title),200);
-  },[tasks]);
-
-  // Main tick — interval NEVER dies mid-sprint. Blocked by transitioningRef during transitions.
-  // All refs are updated synchronously so interval always reads fresh values.
-  useEffect(()=>{
-    if(!running||phase!=="running")return;
-    clearInterval(tickRef.current);
-    tickRef.current=setInterval(()=>{
-      if(!runningRef.current||transitioningRef.current)return;
-      const cur=secsRef.current;
-      const n=cur-1;
-
-      if(n===3)speak("Three");
-      else if(n===2)speak("Two");
-      else if(n===1)speak("One");
-
-      if(n<=0){
-        // Don't clearInterval — keep it running, blocked by transitioningRef
-        setSecs(0);
-        secsRef.current=0;
-        setTransitioning(true);
-        transitioningRef.current=true;
-        beep(880,200);
-        const next=taskIdxRef.current+1;
-        const tks=tasksRef.current;
-        const last=next>=tks.length;
-        if(!last){beep(660,120,0.18);setTimeout(()=>speak(tks[next].title),180);}
-        setTimeout(()=>goToTask(next),last?400:1400);
-      }else{
-        setSecs(n);
-        secsRef.current=n;
-      }
-    },1000);
-    return()=>clearInterval(tickRef.current);
-  },[running,phase,goToTask]);
-
-  // Auto-start if restoring a running sprint
-  useEffect(()=>{
-    if(restore?.running&&restore?.phase==="running"&&phase==="running"){
-      setRunning(true);runningRef.current=true;
-    }
-  },[]);
-
-  // Log run + auto-mark sprint done when completed
-  const loggedRef=useRef(false);
   useEffect(()=>{
     if(phase==="done"&&!loggedRef.current){
       loggedRef.current=true;
-      onLogRun&&onLogRun(sprint.id,sprint.name,sprint.emoji||"⚡",tasks.length,totalSecs(tasks),elapsed);
+      onLogRun&&onLogRun(sprint.id,sprint.name,sprint.emoji||"\u26a1",tasks.length,totalSecs(tasks),T.current.elapsed);
       onComplete&&onComplete(sprint.id);
     }
   },[phase]);
 
-  const startSprint=()=>{
-    if(tasks.length===0)return;
-    setPhase("running");setRunning(true);runningRef.current=true;
-    setTaskIdx(0);setSecs(tasks[0].seconds||30);taskIdxRef.current=0;setElapsed(0);
-    showTaskNotif(tasks[0],1,tasks.length);
-    setTimeout(()=>speak(tasks[0].title),100);
-  };
-  const togglePause=()=>{
-    if(running){setRunning(false);runningRef.current=false;clearInterval(tickRef.current);clearInterval(elapsedRef.current);try{window.speechSynthesis.cancel();}catch{}}
-    else{setRunning(true);runningRef.current=true;speak(currentTask?.title||"Resuming");}
-  };
-  const skipTask=()=>{
-    transitioningRef.current=true; // briefly block interval while we switch
-    goToTask(taskIdxRef.current+1);
-  };
-  const prevTask=()=>{
-    if(taskIdxRef.current===0)return;
-    transitioningRef.current=true;
-    goToTask(taskIdxRef.current-1);
-  };
-  const stopSprint=()=>{
-    clearInterval(tickRef.current);clearInterval(elapsedRef.current);
-    setRunning(false);runningRef.current=false;setPhase("idle");
-    setTaskIdx(0);setSecs(tasks[0]?.seconds||30);setElapsed(0);setTransitioning(false);
+  useEffect(()=>{setExpandedNote(false);},[dispIdx]);
+
+  // ── Timer core ────────────────────────────────────────────────
+
+  const finishSprint=useCallback(()=>{
+    clearInterval(tickRef.current);
+    T.current.running=false;T.current.transitioning=false;
+    setPhase("done");setIsRunning(false);setTransitioning(false);
     clearRunnerState();
     try{window.speechSynthesis.cancel();}catch{}
+    setTimeout(()=>{chime();speak("Sprint complete! Great work.");},100);
+  },[]);
+
+  const goToTask=useCallback((idx)=>{
+    const tks=T.current.tasks;
+    if(idx>=tks.length){finishSprint();return;}
+    const task=tks[idx];const ns=task.seconds||30;
+    // Mutate T immediately so interval reads correct values on very next tick
+    T.current.taskIdx=idx;T.current.secs=ns;T.current.transitioning=false;
+    // Snap ring to full then re-enable smooth drain (no reverse animation)
+    setSnapRing(true);
+    requestAnimationFrame(()=>requestAnimationFrame(()=>setSnapRing(false)));
+    setDispIdx(idx);setDispSecs(ns);setTransitioning(false);
+    showTaskNotif(task,idx+1,tks.length);
+    setTimeout(()=>speak(task.title),150);
+  },[finishSprint]);
+
+  // Keep gotoRef current so setTimeout closures always have latest version
+  useEffect(()=>{gotoRef.current=goToTask;},[goToTask]);
+
+  const startInterval=useCallback(()=>{
+    clearInterval(tickRef.current);
+    tickRef.current=setInterval(()=>{
+      const t=T.current;
+      if(!t.running||t.transitioning)return;
+      // Direct mutation — zero React state reads inside this callback
+      t.secs-=1;t.elapsed+=1;
+      setDispSecs(t.secs);
+      setDispElapsed(t.elapsed);
+      if(t.secs===3)speak("Three");
+      else if(t.secs===2)speak("Two");
+      else if(t.secs===1)speak("One");
+      if(t.secs<=0){
+        t.transitioning=true;
+        setTransitioning(true);
+        beep(880,200);
+        const next=t.taskIdx+1;
+        const tks=t.tasks;
+        const isLast=next>=tks.length;
+        if(!isLast){setTimeout(()=>{beep(660,120,0.18);speak(tks[next].title);},200);}
+        setTimeout(()=>gotoRef.current(next),isLast?400:1400);
+      }
+    },1000);
+  },[]);
+
+  const startSprint=()=>{
+    if(tasks.length===0)return;
+    const ft=tasks[0];
+    T.current={running:true,transitioning:false,secs:ft.seconds||30,taskIdx:0,elapsed:0,tasks};
+    setPhase("running");setIsRunning(true);
+    setDispIdx(0);setDispSecs(ft.seconds||30);setDispElapsed(0);setTransitioning(false);
+    showTaskNotif(ft,1,tasks.length);
+    setTimeout(()=>speak(ft.title),100);
+    startInterval();
   };
 
-  // Ring math
-  const taskTotal=currentTask?.seconds||1;
-  const pct=Math.max(0,Math.min(1,secs/taskTotal));
-  const ringColor=secs>30?LIME:secs>10?ORANGE:RED;
-  const R=ringSize/2*0.88,CX=ringSize/2,CY=ringSize/2,C=2*Math.PI*R,sw=Math.round(ringSize*0.09);
+  const togglePause=()=>{
+    if(T.current.running){T.current.running=false;setIsRunning(false);try{window.speechSynthesis.cancel();}catch{}}
+    else{T.current.running=true;setIsRunning(true);speak(tasks[T.current.taskIdx]?.title||"Resuming");}
+  };
+  const skipTask=()=>{T.current.transitioning=true;gotoRef.current(T.current.taskIdx+1);};
+  const prevTask=()=>{if(T.current.taskIdx===0)return;T.current.transitioning=true;gotoRef.current(T.current.taskIdx-1);};
+  const stopSprint=()=>{
+    clearInterval(tickRef.current);T.current.running=false;T.current.transitioning=false;
+    setIsRunning(false);setPhase("idle");
+    setDispIdx(0);setDispSecs(tasks[0]?.seconds||30);setDispElapsed(0);setTransitioning(false);
+    clearRunnerState();try{window.speechSynthesis.cancel();}catch{}
+  };
 
-  /* ── Done screen ── */
+  // Restore: auto-start if we were mid-run
+  useEffect(()=>{
+    if(restore?.running&&restore?.phase==="running"){
+      T.current.running=true;setIsRunning(true);setPhase("running");startInterval();
+    }
+  // eslint-disable-next-line
+  },[]);
+
+  // Ring math
+  const taskTotal=(tasks[dispIdx]?.seconds)||1;
+  const pct=Math.max(0,Math.min(1,dispSecs/taskTotal));
+  const ringColor=dispSecs>30?LIME:dispSecs>10?ORANGE:RED;
+  const R=ringSize/2*0.88,CX=ringSize/2,CY=ringSize/2,C=2*Math.PI*R,sw=Math.round(ringSize*0.09);
+  const currentTask=tasks[dispIdx]||null;
+  const upcomingTasks=tasks.slice(dispIdx+1);
+  const totalRemaining=useMemo(()=>tasks.slice(dispIdx).reduce((a,t,i)=>a+(i===0?dispSecs:(t.seconds||0)),0),[tasks,dispIdx,dispSecs]);
+
   if(phase==="done"){
     return(
       <div style={{height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"#000",gap:16,padding:32,textAlign:"center"}}>
-        <div style={{fontSize:60,marginBottom:8}}>🎉</div>
+        <div style={{fontSize:60,marginBottom:8}}>\uD83C\uDF89</div>
         <div style={{fontSize:32,fontWeight:900,color:LIME,letterSpacing:-2}}>SPRINT COMPLETE</div>
-        <div style={{fontSize:16,color:MUTED}}>{sprint.emoji||"⚡"} {sprint.name}</div>
+        <div style={{fontSize:16,color:MUTED}}>{sprint.emoji||"\u26a1"} {sprint.name}</div>
         <div style={{display:"flex",gap:12,marginTop:8,flexWrap:"wrap",justifyContent:"center"}}>
-          {[["TASKS",tasks.length,TEXT],["ELAPSED",fmtSecs(elapsed),LIME],["PLANNED",fmtSecs(totalSecs(tasks)),ORANGE]].map(([label,val,col])=>(
+          {[["TASKS",tasks.length,TEXT],["ELAPSED",fmtSecs(T.current.elapsed),LIME],["PLANNED",fmtSecs(totalSecs(tasks)),ORANGE]].map(([label,val,col])=>(
             <div key={label} style={{background:CARD,borderRadius:10,border:`1px solid ${BORDER}`,padding:"12px 18px"}}>
               <div style={{fontSize:10,color:MUTED,letterSpacing:2,marginBottom:4}}>{label}</div>
               <div style={{fontSize:22,fontWeight:900,color:col}}>{val}</div>
@@ -1157,14 +1109,8 @@ function SprintRunner({sprint,user,onClose,onLogRun,onComplete}){
           ))}
         </div>
         <div style={{display:"flex",flexDirection:"column",gap:10,width:"100%",maxWidth:300,marginTop:16}}>
-          <button onClick={stopSprint}
-            style={{width:"100%",padding:"13px",borderRadius:10,border:"none",background:LIME,color:"#000",fontWeight:900,fontSize:15,cursor:"pointer",fontFamily:"inherit"}}>
-            ↺ Run Again
-          </button>
-          <button onClick={onClose}
-            style={{width:"100%",padding:"12px",borderRadius:10,border:`1px solid ${BORDER}`,background:"transparent",color:MUTED,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>
-            ← Back to Sprints
-          </button>
+          <button onClick={stopSprint} style={{width:"100%",padding:"13px",borderRadius:10,border:"none",background:LIME,color:"#000",fontWeight:900,fontSize:15,cursor:"pointer",fontFamily:"inherit"}}>\u21ba Run Again</button>
+          <button onClick={onClose} style={{width:"100%",padding:"12px",borderRadius:10,border:`1px solid ${BORDER}`,background:"transparent",color:MUTED,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>&larr; Back to Sprints</button>
         </div>
       </div>
     );
@@ -1172,60 +1118,44 @@ function SprintRunner({sprint,user,onClose,onLogRun,onComplete}){
 
   return(
     <div style={{height:"100%",display:"flex",flexDirection:"column",background:"#000"}}>
-
-      {/* Header */}
       <div style={{padding:"14px 18px",borderBottom:`1px solid ${BORDER}`,display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
-        <button onClick={()=>{stopSprint();onClose();}} style={{background:"none",border:"none",color:MUTED,fontSize:26,cursor:"pointer",lineHeight:1,padding:"0 4px",marginLeft:-4}}>‹</button>
-        <span style={{fontSize:20,flexShrink:0}}>{sprint.emoji||"⚡"}</span>
+        <button onClick={()=>{stopSprint();onClose();}} style={{background:"none",border:"none",color:MUTED,fontSize:26,cursor:"pointer",lineHeight:1,padding:"0 4px",marginLeft:-4}}>&#x2039;</button>
+        <span style={{fontSize:20,flexShrink:0}}>{sprint.emoji||"\u26a1"}</span>
         <div style={{flex:1,minWidth:0}}>
           <div style={{fontWeight:800,fontSize:14,color:TEXT,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{sprint.name}</div>
-          <div style={{fontSize:11,color:MUTED,marginTop:1}}>{fmtSecs(totalRemaining)} remaining · {tasks.length} tasks</div>
+          <div style={{fontSize:11,color:MUTED,marginTop:1}}>{fmtSecs(totalRemaining)} remaining &middot; {tasks.length} tasks</div>
         </div>
-        {phase==="running"&&(
-          <button onClick={stopSprint} style={{padding:"5px 12px",borderRadius:7,border:`1px solid ${BORDER}`,background:"transparent",color:MUTED,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>Stop</button>
-        )}
+        {phase==="running"&&<button onClick={stopSprint} style={{padding:"5px 12px",borderRadius:7,border:`1px solid ${BORDER}`,background:"transparent",color:MUTED,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>Stop</button>}
       </div>
-
-      {/* Body */}
       <div style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",alignItems:"center",padding:"16px 12px 28px",gap:16}}>
-
-        {/* Progress dots */}
         {tasks.length>0&&(
           <div style={{display:"flex",gap:5,flexWrap:"wrap",justifyContent:"center",maxWidth:420}}>
             {tasks.map((t,i)=>(
               <div key={t.id||i} style={{width:8,height:8,borderRadius:"50%",
-                background:i<taskIdx?GREEN:i===taskIdx?(phase==="running"?LIME:"#555"):"#2a2a2a",
-                transition:"background .4s",boxShadow:i===taskIdx&&phase==="running"?`0 0 10px ${LIME}55`:"none"}}/>
+                background:i<dispIdx?GREEN:i===dispIdx?(phase==="running"?LIME:"#555"):"#2a2a2a",
+                transition:"background .4s",boxShadow:i===dispIdx&&phase==="running"?`0 0 10px ${LIME}55`:"none"}}/>
             ))}
           </div>
         )}
-
-        {/* Current task */}
         {currentTask&&(
           <div style={{textAlign:"center",padding:"0 8px",width:"100%",maxWidth:420}}>
             <div style={{fontSize:10,color:MUTED,letterSpacing:2,marginBottom:8,fontWeight:700}}>
-              {phase==="idle"?"READY TO RUN":transitioning?"FINISHING…":running?"NOW RUNNING":"PAUSED"}
-              {" · "}{taskIdx+1}/{tasks.length}
+              {phase==="idle"?"READY TO RUN":transitioning?"FINISHING\u2026":isRunning?"NOW RUNNING":"PAUSED"}
+              {" \u00b7 "}{dispIdx+1}/{tasks.length}
             </div>
-            <div style={{fontSize:22,fontWeight:900,color:TEXT,lineHeight:1.25,transition:"opacity .3s",opacity:transitioning?0.3:1}}>
-              {currentTask.title}
-            </div>
-            {phase==="idle"&&<div style={{fontSize:12,color:MUTED,marginTop:6}}>{fmtSecs(currentTask.seconds)} · tap Start when ready</div>}
-
-            {/* Notes toggle */}
+            <div style={{fontSize:22,fontWeight:900,color:TEXT,lineHeight:1.25,transition:"opacity .3s",opacity:transitioning?0.3:1}}>{currentTask.title}</div>
+            {phase==="idle"&&<div style={{fontSize:12,color:MUTED,marginTop:6}}>{fmtSecs(currentTask.seconds)} &middot; tap Start when ready</div>}
             {currentTask.notes&&(
               <div style={{marginTop:10}}>
                 <button onClick={()=>setExpandedNote(e=>!e)}
                   style={{padding:"5px 14px",borderRadius:7,border:`1px solid ${expandedNote?ORANGE:BORDER}`,
                     background:expandedNote?"#1a0e00":"transparent",color:expandedNote?ORANGE:MUTED,
                     fontSize:11,cursor:"pointer",fontFamily:"inherit",fontWeight:600}}>
-                  📝 {expandedNote?"Hide Notes":"View Notes"}
+                  \uD83D\uDCDD {expandedNote?"Hide Notes":"View Notes"}
                 </button>
                 {expandedNote&&(
-                  <div className="slide-down"
-                    style={{marginTop:8,padding:"10px 14px",borderRadius:9,
-                      background:"#0e0900",border:`1px solid ${ORANGE}33`,
-                      fontSize:13,color:TEXT,lineHeight:1.6,textAlign:"left",whiteSpace:"pre-wrap"}}>
+                  <div style={{marginTop:8,padding:"10px 14px",borderRadius:9,background:"#0e0900",
+                    border:`1px solid ${ORANGE}33`,fontSize:13,color:TEXT,lineHeight:1.6,textAlign:"left",whiteSpace:"pre-wrap"}}>
                     {currentTask.notes}
                   </div>
                 )}
@@ -1233,8 +1163,6 @@ function SprintRunner({sprint,user,onClose,onLogRun,onComplete}){
             )}
           </div>
         )}
-
-        {/* Big ring */}
         <div ref={containerRef} style={{width:"100%",maxWidth:440,flexShrink:0}}>
           <div style={{position:"relative",width:ringSize,height:ringSize,margin:"0 auto"}}>
             <svg width={ringSize} height={ringSize} style={{transform:"rotate(-90deg)"}}>
@@ -1242,88 +1170,69 @@ function SprintRunner({sprint,user,onClose,onLogRun,onComplete}){
               <circle cx={CX} cy={CY} r={R} fill="none"
                 stroke={phase==="running"?(transitioning?ORANGE:ringColor):"#2a2a2a"}
                 strokeWidth={sw} strokeLinecap="round" strokeDasharray={C} strokeDashoffset={C*(1-pct)}
-                style={{transition:snapRing?"stroke .2s":"stroke-dashoffset 0.95s linear,stroke .35s"}}/>
+                style={{transition:snapRing?"none":"stroke-dashoffset 0.95s linear,stroke .35s"}}/>
             </svg>
             <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:3}}>
               <div style={{fontSize:Math.round(ringSize*0.25),fontWeight:900,lineHeight:1,fontVariantNumeric:"tabular-nums",
                 color:phase==="running"?(transitioning?ORANGE:ringColor):"#333"}}>
-                {phase==="idle"?"GO":phase==="done"?"✓":fmtSecs(secs)}
+                {phase==="idle"?"GO":fmtSecs(dispSecs)}
               </div>
-              {phase==="running"&&!transitioning&&(
-                <div style={{fontSize:Math.round(ringSize*0.042),color:MUTED,letterSpacing:1}}>{running?"seconds left":"paused"}</div>
-              )}
-              {transitioning&&(
-                <div style={{fontSize:Math.round(ringSize*0.042),color:ORANGE,letterSpacing:1}} className="pulse">NEXT UP…</div>
-              )}
-              {phase==="running"&&elapsed>0&&(
-                <div style={{fontSize:Math.round(ringSize*0.037),color:"#2a2a2a",letterSpacing:1,marginTop:6,fontVariantNumeric:"tabular-nums"}}>
-                  {fmtSecs(elapsed)} elapsed
-                </div>
+              {phase==="running"&&!transitioning&&<div style={{fontSize:Math.round(ringSize*0.042),color:MUTED,letterSpacing:1}}>{isRunning?"seconds left":"paused"}</div>}
+              {transitioning&&<div style={{fontSize:Math.round(ringSize*0.042),color:ORANGE,letterSpacing:1}} className="pulse">NEXT UP\u2026</div>}
+              {phase==="running"&&dispElapsed>0&&(
+                <div style={{fontSize:Math.round(ringSize*0.037),color:"#2a2a2a",letterSpacing:1,marginTop:6,fontVariantNumeric:"tabular-nums"}}>{fmtSecs(dispElapsed)} elapsed</div>
               )}
             </div>
           </div>
         </div>
-
-        {/* Controls */}
         <div style={{display:"flex",gap:14,alignItems:"center"}}>
           {phase==="idle"&&(
             <button onClick={startSprint} disabled={tasks.length===0}
               style={{padding:"14px 52px",borderRadius:10,border:"none",
                 background:tasks.length===0?"#2a2a2a":LIME,color:tasks.length===0?MUTED:"#000",
                 fontWeight:900,fontSize:17,cursor:tasks.length===0?"default":"pointer",fontFamily:"inherit"}}>
-              ▶ Start Sprint
+              &#x25B6; Start Sprint
             </button>
           )}
           {phase==="running"&&(<>
-            <button onClick={prevTask} disabled={taskIdx===0||transitioning}
+            <button onClick={prevTask} disabled={dispIdx===0||transitioning}
               style={{width:48,height:48,borderRadius:"50%",border:`1px solid ${BORDER}`,background:CARD2,
-                color:taskIdx===0||transitioning?BORDER:MUTED,cursor:taskIdx===0||transitioning?"default":"pointer",
-                fontSize:15,display:"flex",alignItems:"center",justifyContent:"center"}}>◀</button>
+                color:dispIdx===0||transitioning?BORDER:MUTED,cursor:dispIdx===0||transitioning?"default":"pointer",
+                fontSize:15,display:"flex",alignItems:"center",justifyContent:"center"}}>&#x25C0;</button>
             <button onClick={togglePause} disabled={transitioning}
               style={{width:64,height:64,borderRadius:"50%",border:"none",background:transitioning?"#2a2a2a":LIME,
                 color:"#000",fontSize:24,cursor:transitioning?"default":"pointer",
                 display:"flex",alignItems:"center",justifyContent:"center",fontWeight:900}}>
-              {running?"⏸":"▶"}
+              {isRunning?"\u23F8":"\u25B6"}
             </button>
             <button onClick={skipTask} disabled={transitioning}
               style={{width:48,height:48,borderRadius:"50%",border:`1px solid ${BORDER}`,background:CARD2,
                 color:transitioning?BORDER:MUTED,cursor:transitioning?"default":"pointer",
-                fontSize:15,display:"flex",alignItems:"center",justifyContent:"center"}}>▶▶</button>
+                fontSize:15,display:"flex",alignItems:"center",justifyContent:"center"}}>&#x25B6;&#x25B6;</button>
           </>)}
         </div>
-
-        {phase==="idle"&&(
-          <div style={{fontSize:11,color:"#2a2a2a",textAlign:"center",lineHeight:1.7,maxWidth:300}}>
-            🔊 Each task announced aloud · 🔒 Screen stays on · 📌 Tab title shows countdown
-          </div>
-        )}
-
-        {/* All upcoming */}
+        {phase==="idle"&&<div style={{fontSize:11,color:"#2a2a2a",textAlign:"center",lineHeight:1.7,maxWidth:300}}>\uD83D\uDD0A Each task announced aloud &middot; \uD83D\uDD12 Screen stays on</div>}
         {upcomingTasks.length>0&&(
           <div style={{width:"100%",maxWidth:440}}>
-            <div style={{fontSize:10,color:MUTED,letterSpacing:2,marginBottom:8,fontWeight:700}}>UPCOMING · {upcomingTasks.length}</div>
+            <div style={{fontSize:10,color:MUTED,letterSpacing:2,marginBottom:8,fontWeight:700}}>UPCOMING &middot; {upcomingTasks.length}</div>
             {upcomingTasks.map((t,i)=>(
-              <div key={t.id||i}
-                style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",
-                  borderRadius:9,background:CARD,border:`1px solid ${BORDER}`,marginBottom:5}}>
-                <span style={{fontSize:10,color:MUTED,width:18,textAlign:"right",flexShrink:0}}>{taskIdx+2+i}.</span>
+              <div key={t.id||i} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",
+                borderRadius:9,background:CARD,border:`1px solid ${BORDER}`,marginBottom:5}}>
+                <span style={{fontSize:10,color:MUTED,width:18,textAlign:"right",flexShrink:0}}>{dispIdx+2+i}.</span>
                 <span style={{flex:1,fontSize:13,color:TEXT,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.title}</span>
-                {t.notes&&<span style={{fontSize:11,color:ORANGE,flexShrink:0}}>📝</span>}
+                {t.notes&&<span style={{fontSize:11,color:ORANGE,flexShrink:0}}>\uD83D\uDCDD</span>}
                 <span style={{fontSize:11,color:ORANGE,flexShrink:0,fontVariantNumeric:"tabular-nums"}}>{fmtSecs(t.seconds||0)}</span>
               </div>
             ))}
           </div>
         )}
-
-        {/* Completed */}
-        {phase==="running"&&taskIdx>0&&(
+        {phase==="running"&&dispIdx>0&&(
           <div style={{width:"100%",maxWidth:440}}>
             <div style={{fontSize:10,color:MUTED,letterSpacing:2,marginBottom:8,fontWeight:700}}>COMPLETED</div>
-            {tasks.slice(0,taskIdx).reverse().map((t,i)=>(
-              <div key={t.id||i}
-                style={{display:"flex",alignItems:"center",gap:10,padding:"7px 12px",
-                  borderRadius:9,background:"#091409",border:`1px solid #30D15822`,marginBottom:4}}>
-                <span style={{color:GREEN,fontSize:11,flexShrink:0}}>✓</span>
+            {tasks.slice(0,dispIdx).reverse().map((t,i)=>(
+              <div key={t.id||i} style={{display:"flex",alignItems:"center",gap:10,padding:"7px 12px",
+                borderRadius:9,background:"#091409",border:`1px solid #30D15822`,marginBottom:4}}>
+                <span style={{color:GREEN,fontSize:11,flexShrink:0}}>\u2713</span>
                 <span style={{flex:1,fontSize:12,color:"#30D158aa",textDecoration:"line-through",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.title}</span>
                 <span style={{fontSize:10,color:"#30D15866",flexShrink:0}}>{fmtSecs(t.seconds||0)}</span>
               </div>
@@ -1433,7 +1342,23 @@ function App(){
     }catch{}
   };
 
-  const saveSettingsAndClose=s=>{
+  const saveDailyState=useCallback(async(id,patch)=>{
+    // Optimistically update local sprint list
+    const resetHour=settings.resetHour??4;
+    const today=todayKey(resetHour);
+    setSprints(prev=>prev.map(s=>{
+      if(s.id!==id)return s;
+      const existing=resolveDS(s.daily_state,resetHour);
+      const next={...existing,...patch,date:today};
+      return{...s,daily_state:next};
+    }));
+    // Persist to Supabase
+    const sp=sprints.find(s=>s.id===id);if(!sp)return;
+    const resetHr=settings.resetHour??4;
+    const existing=resolveDS(sp.daily_state,resetHr);
+    const next={...existing,...patch,date:todayKey(resetHr)};
+    await db.from("sprints_v2").update({daily_state:next}).eq("id",id).eq("user_id",user.id);
+  },[sprints,settings,user]);
     setSettings(s);
     if(user?.id)persistSettings(user.id,s);
     setShowSettings(false);
@@ -1450,7 +1375,7 @@ function App(){
     <SprintRunner sprint={runTarget} user={user}
       onClose={()=>{setRunTarget(null);setScreen("list");loadSprints(user);}}
       onLogRun={logRun}
-      onComplete={(id)=>{markDoneToday(id,true,settings.resetHour??4);}}
+      onComplete={(id)=>saveDailyState(id,{done:true})}
     />
   );
 
@@ -1470,6 +1395,7 @@ function App(){
         onShowHistory={()=>setShowHistory(true)}
         onShowSettings={()=>setShowSettings(true)}
         onPreview={sp=>setPreviewTarget(sp)}
+        onToggleDone={(id,done)=>saveDailyState(id,{done})}
       />
       {previewTarget&&(
         <SprintPreview
@@ -1477,6 +1403,7 @@ function App(){
           settings={settings}
           onClose={()=>setPreviewTarget(null)}
           onRun={sp=>{setPreviewTarget(null);setRunTarget(sp);setScreen("run");}}
+          onSaveSkipped={(id,ids)=>saveDailyState(id,{skipped:ids})}
         />
       )}
       {showHistory&&<HistoryPanel user={user} onClose={()=>setShowHistory(false)}/>}
