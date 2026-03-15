@@ -8,7 +8,7 @@
 <meta name="mobile-web-app-capable" content="yes"/>
 <meta name="theme-color" content="#000000"/>
 <meta name="apple-mobile-web-app-title" content="SPRINT"/>
-<title>SPRINT v2.3</title>
+<title>SPRINT v2.4</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -277,7 +277,7 @@ function AuthScreen({onAuth}){
           <div style={{fontSize:44,fontWeight:900,letterSpacing:-3,lineHeight:1}}>
             <span style={{color:LIME}}>⚡</span><span style={{color:TEXT}}> SPRINT</span>
           </div>
-          <div style={{fontSize:11,color:MUTED,letterSpacing:4,marginTop:6}}>v2.3</div>
+          <div style={{fontSize:11,color:MUTED,letterSpacing:4,marginTop:6}}>v2.4</div>
         </div>
         <div style={{display:"flex",marginBottom:20,border:`1px solid ${BORDER}`,borderRadius:10,overflow:"hidden"}}>
           {["login","signup"].map(m=>(
@@ -438,8 +438,126 @@ function InstallBanner({onDismiss}){
   );
 }
 
+/* ── Per-sprint task skip state (resets daily) ─────────────────── */
+const getSkipped=(sprintId,resetHour=4)=>{
+  try{
+    const obj=JSON.parse(localStorage.getItem("sprint_skipped_v2")||"{}");
+    const today=todayKey(resetHour);
+    Object.keys(obj).forEach(k=>{if(obj[k].day!==today)delete obj[k];});
+    return new Set(obj[sprintId]?.ids||[]);
+  }catch{return new Set();}
+};
+const saveSkipped=(sprintId,ids,resetHour=4)=>{
+  try{
+    const obj=JSON.parse(localStorage.getItem("sprint_skipped_v2")||"{}");
+    const today=todayKey(resetHour);
+    Object.keys(obj).forEach(k=>{if(obj[k].day!==today)delete obj[k];});
+    if(ids.size===0)delete obj[sprintId];
+    else obj[sprintId]={day:today,ids:[...ids]};
+    localStorage.setItem("sprint_skipped_v2",JSON.stringify(obj));
+  }catch{}
+};
+
+/* ── Sprint Preview (tap card body to open) ────────────────────── */
+function SprintPreview({sprint,settings,onClose,onRun}){
+  const resetHour=settings.resetHour??4;
+  const [skipped,setSkipped]=useState(()=>getSkipped(sprint.id,resetHour));
+  const tasks=sprint.tasks||[];
+  const activeTasks=tasks.filter(t=>!skipped.has(t.id));
+
+  const toggle=id=>{
+    setSkipped(prev=>{
+      const next=new Set(prev);
+      if(next.has(id))next.delete(id);else next.add(id);
+      saveSkipped(sprint.id,next,resetHour);
+      return next;
+    });
+  };
+  const resetAll=()=>{setSkipped(new Set());saveSkipped(sprint.id,new Set(),resetHour);};
+
+  return(
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.82)",zIndex:500,display:"flex",alignItems:"flex-end"}}
+      onClick={onClose}>
+      <div onClick={e=>e.stopPropagation()}
+        style={{width:"100%",maxHeight:"80vh",display:"flex",flexDirection:"column",
+          background:"#111",borderRadius:"16px 16px 0 0",
+          border:`1px solid ${BORDER}`,borderBottom:"none"}}>
+
+        {/* Header */}
+        <div style={{padding:"16px 16px 12px",display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
+          <span style={{fontSize:22}}>{sprint.emoji||"⚡"}</span>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontWeight:800,fontSize:15,color:TEXT,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{sprint.name}</div>
+            <div style={{fontSize:11,color:MUTED,marginTop:1}}>
+              {skipped.size>0
+                ?<span>Skipping <span style={{color:ORANGE,fontWeight:700}}>{skipped.size}</span> task{skipped.size!==1?"s":""} · <span style={{color:LIME,fontWeight:700}}>{activeTasks.length}</span> will run</span>
+                :<span>{tasks.length} tasks · {fmtSecs(totalSecs(tasks))} total</span>}
+            </div>
+          </div>
+          {skipped.size>0&&(
+            <button onClick={resetAll} style={{padding:"4px 10px",borderRadius:6,border:`1px solid ${BORDER}`,
+              background:"transparent",color:MUTED,fontSize:11,cursor:"pointer",fontFamily:"inherit"}}>
+              Reset
+            </button>
+          )}
+          <button onClick={onClose} style={{background:"none",border:"none",color:MUTED,fontSize:20,cursor:"pointer",lineHeight:1,padding:"2px 6px"}}>✕</button>
+        </div>
+
+        <div style={{fontSize:10,color:MUTED,letterSpacing:2,fontWeight:700,padding:"0 16px 8px"}}>
+          TAP TO SKIP FROM RUN
+        </div>
+
+        {/* Task list */}
+        <div style={{flex:1,overflowY:"auto",padding:"0 16px 16px"}}>
+          {tasks.map((t,i)=>{
+            const isSkipped=skipped.has(t.id);
+            return(
+              <button key={t.id} onClick={()=>toggle(t.id)}
+                style={{width:"100%",display:"flex",alignItems:"center",gap:10,
+                  padding:"10px 12px",borderRadius:9,marginBottom:6,cursor:"pointer",
+                  background:isSkipped?"#0e0a00":CARD2,
+                  border:`1px solid ${isSkipped?ORANGE+"44":BORDER}`,
+                  textAlign:"left",fontFamily:"inherit",transition:"all .15s"}}>
+                {/* Checkbox */}
+                <div style={{width:20,height:20,borderRadius:5,flexShrink:0,
+                  border:`2px solid ${isSkipped?ORANGE:BORDER}`,
+                  background:isSkipped?ORANGE+"22":"transparent",
+                  display:"flex",alignItems:"center",justifyContent:"center"}}>
+                  {isSkipped&&<span style={{color:ORANGE,fontSize:11,fontWeight:900,lineHeight:1}}>✕</span>}
+                </div>
+                <span style={{fontSize:10,color:MUTED,width:16,textAlign:"right",flexShrink:0}}>{i+1}.</span>
+                <span style={{flex:1,fontSize:13,color:isSkipped?MUTED:TEXT,
+                  textDecoration:isSkipped?"line-through":"none",
+                  overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                  {t.title}
+                </span>
+                {t.notes&&!isSkipped&&<span style={{fontSize:10,color:ORANGE,flexShrink:0}}>📝</span>}
+                <span style={{fontSize:11,color:isSkipped?BORDER:ORANGE,flexShrink:0,fontVariantNumeric:"tabular-nums"}}>
+                  {fmtSecs(t.seconds||0)}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Run button */}
+        <div style={{padding:"10px 16px 32px",borderTop:`1px solid ${BORDER}`,flexShrink:0}}>
+          <button onClick={()=>onRun({...sprint,tasks:activeTasks})}
+            disabled={activeTasks.length===0}
+            style={{width:"100%",padding:"14px",borderRadius:10,border:"none",
+              background:activeTasks.length===0?"#2a2a2a":LIME,
+              color:activeTasks.length===0?MUTED:"#000",
+              fontWeight:900,fontSize:15,cursor:activeTasks.length===0?"default":"pointer",fontFamily:"inherit"}}>
+            {activeTasks.length===0?"No tasks to run":`▶ Run ${activeTasks.length} Task${activeTasks.length!==1?"s":""} · ${fmtSecs(totalSecs(activeTasks))}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Sprint List ───────────────────────────────────────────────── */
-function SprintList({user,sprints,loading,settings,onRun,onEdit,onCreate,onDuplicate,onDelete,onRefresh,onShowHistory,onShowSettings}){
+function SprintList({user,sprints,loading,settings,onRun,onEdit,onCreate,onDuplicate,onDelete,onRefresh,onShowHistory,onShowSettings,onPreview}){
   const resetHour=settings.resetHour??4;
   const [doneMap,setDoneMap]=useState(()=>getDoneToday(resetHour));
   const [orderIds,setOrderIds]=useState(()=>getOrder(user?.id));
@@ -536,7 +654,7 @@ function SprintList({user,sprints,loading,settings,onRun,onEdit,onCreate,onDupli
           <div style={{fontWeight:900,fontSize:22,letterSpacing:-2,lineHeight:1}}>
             <span style={{color:LIME}}>⚡</span><span style={{color:TEXT}}> SPRINT</span>
           </div>
-          <div style={{fontSize:10,color:MUTED,letterSpacing:3,marginTop:2}}>v2.3</div>
+          <div style={{fontSize:10,color:MUTED,letterSpacing:3,marginTop:2}}>v2.4</div>
         </div>
         {displayed.length>0&&(
           <div style={{background:doneCount===displayed.length?"#0a1f0a":INSET,
@@ -607,9 +725,9 @@ function SprintList({user,sprints,loading,settings,onRun,onEdit,onCreate,onDupli
                   {done&&<span style={{color:"#000",fontSize:12,fontWeight:900,lineHeight:1}}>✓</span>}
                 </button>
 
-                <span style={{fontSize:22,flexShrink:0}}>{sp.emoji||"⚡"}</span>
+                <span style={{fontSize:22,flexShrink:0,cursor:"pointer"}} onClick={()=>onPreview(sp)}>{sp.emoji||"⚡"}</span>
 
-                <div style={{flex:1,minWidth:0}}>
+                <div style={{flex:1,minWidth:0,cursor:"pointer"}} onClick={()=>onPreview(sp)}>
                   <div style={{fontWeight:800,fontSize:14,color:done?"#30D158aa":TEXT,
                     textDecoration:done?"line-through":"none",
                     overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
@@ -827,7 +945,7 @@ function SprintEditor({sprint,onSave,onCancel,onDelete}){
 }
 
 /* ── Sprint Runner ─────────────────────────────────────────────── */
-function SprintRunner({sprint,user,onClose,onLogRun}){
+function SprintRunner({sprint,user,onClose,onLogRun,onComplete}){
   const tasks=useMemo(()=>sprint.tasks||[],[sprint]);
   const restore=sprint._restore;
 
@@ -845,11 +963,15 @@ function SprintRunner({sprint,user,onClose,onLogRun}){
   const tickRef=useRef(null);
   const elapsedRef=useRef(null);
   const taskIdxRef=useRef(taskIdx);
+  const secsRef=useRef(secs);
+  const tasksRef=useRef(tasks);
   const runningRef=useRef(running);
   const transitioningRef=useRef(false);
   const phaseRef=useRef(phase);
 
   useEffect(()=>{taskIdxRef.current=taskIdx;},[taskIdx]);
+  useEffect(()=>{secsRef.current=secs;},[secs]);
+  useEffect(()=>{tasksRef.current=tasks;},[tasks]);
   useEffect(()=>{runningRef.current=running;},[running]);
   useEffect(()=>{transitioningRef.current=transitioning;},[transitioning]);
   useEffect(()=>{phaseRef.current=phase;},[phase]);
@@ -920,30 +1042,38 @@ function SprintRunner({sprint,user,onClose,onLogRun}){
     setTimeout(()=>speak(task.title),200);
   },[tasks]);
 
-  // Main tick
+  // Main tick — side effects NEVER inside a setState updater (React 18 may call updaters multiple times)
   useEffect(()=>{
     if(!running||phase!=="running")return;
     clearInterval(tickRef.current);
     tickRef.current=setInterval(()=>{
       if(!runningRef.current||transitioningRef.current)return;
-      setSecs(s=>{
-        const n=s-1;
-        if(n===3)speak("Three");else if(n===2)speak("Two");else if(n===1)speak("One");
-        if(n<=0){
-          clearInterval(tickRef.current);
-          setTransitioning(true);transitioningRef.current=true;
-          beep(880,200);
-          const next=taskIdxRef.current+1;
-          const last=next>=tasks.length;
-          if(!last)speak(`Up next: ${tasks[next].title}`);
-          setTimeout(()=>goToTask(next),last?400:1400);
-          return 0;
-        }
-        return n;
-      });
+      const cur=secsRef.current;
+      const n=cur-1;
+
+      // Countdown cues
+      if(n===3)speak("Three");
+      else if(n===2)speak("Two");
+      else if(n===1)speak("One");
+
+      if(n<=0){
+        // Task complete — all side effects here, NOT inside setState
+        setSecs(0);
+        clearInterval(tickRef.current);
+        setTransitioning(true);
+        transitioningRef.current=true;
+        beep(880,200);
+        const next=taskIdxRef.current+1;
+        const tks=tasksRef.current;
+        const last=next>=tks.length;
+        if(!last){beep(660,120,0.18);setTimeout(()=>speak(tks[next].title),180);}
+        setTimeout(()=>goToTask(next),last?400:1400);
+      }else{
+        setSecs(n);
+      }
     },1000);
     return()=>clearInterval(tickRef.current);
-  },[running,phase,taskIdx,tasks,goToTask]);
+  },[running,phase,goToTask]);
 
   // Auto-start if restoring a running sprint
   useEffect(()=>{
@@ -952,12 +1082,13 @@ function SprintRunner({sprint,user,onClose,onLogRun}){
     }
   },[]);
 
-  // Log run when sprint completes
+  // Log run + auto-mark sprint done when completed
   const loggedRef=useRef(false);
   useEffect(()=>{
     if(phase==="done"&&!loggedRef.current){
       loggedRef.current=true;
       onLogRun&&onLogRun(sprint.id,sprint.name,sprint.emoji||"⚡",tasks.length,totalSecs(tasks),elapsed);
+      onComplete&&onComplete(sprint.id);
     }
   },[phase]);
 
@@ -1193,6 +1324,7 @@ function App(){
   const [settings,setSettings]=useState({});
   const [showHistory,setShowHistory]=useState(false);
   const [showSettings,setShowSettings]=useState(false);
+  const [previewTarget,setPreviewTarget]=useState(null);
 
   const loadSprints=useCallback(async(u)=>{
     setLoadingList(true);
@@ -1293,10 +1425,11 @@ function App(){
   if(screen==="auth")return<AuthScreen onAuth={u=>{setUser(u);setSettings(loadSettings(u.id));setScreen("list");loadSprints(u);}}/>;
 
   if(screen==="run"&&runTarget)return(
-    <>
-      <SprintRunner sprint={runTarget} user={user} onClose={()=>{setRunTarget(null);setScreen("list");loadSprints(user);}} onLogRun={logRun}/>
-      {/* Log run when done (we do it inside the runner via useEffect on phase change) */}
-    </>
+    <SprintRunner sprint={runTarget} user={user}
+      onClose={()=>{setRunTarget(null);setScreen("list");loadSprints(user);}}
+      onLogRun={logRun}
+      onComplete={(id)=>{markDoneToday(id,true,settings.resetHour??4);}}
+    />
   );
 
   if(screen==="edit")return(
@@ -1314,7 +1447,16 @@ function App(){
         onRefresh={()=>loadSprints(user)}
         onShowHistory={()=>setShowHistory(true)}
         onShowSettings={()=>setShowSettings(true)}
+        onPreview={sp=>setPreviewTarget(sp)}
       />
+      {previewTarget&&(
+        <SprintPreview
+          sprint={previewTarget}
+          settings={settings}
+          onClose={()=>setPreviewTarget(null)}
+          onRun={sp=>{setPreviewTarget(null);setRunTarget(sp);setScreen("run");}}
+        />
+      )}
       {showHistory&&<HistoryPanel user={user} onClose={()=>setShowHistory(false)}/>}
       {showSettings&&<SettingsPanel settings={settings} onSave={saveSettingsAndClose} onClose={()=>setShowSettings(false)}/>}
     </>
