@@ -709,6 +709,7 @@ function SprintRunner({sprint,onClose,onLogRun,onComplete}){
     taskIdx:restore?.taskIdx??0,
     elapsed:restore?.elapsed??0,
     tasks,
+    taskStartedAt:Date.now(), // wall-clock when current task started
   });
   const containerRef=useRef(null);
   const tickRef=useRef(null);
@@ -717,7 +718,7 @@ function SprintRunner({sprint,onClose,onLogRun,onComplete}){
 
   useEffect(()=>{T.current.tasks=tasks;},[tasks]);
   useEffect(()=>{setExpandedNote(false);},[dispIdx]);
-  useEffect(()=>()=>{clearInterval(tickRef.current);relWL();},[]);
+  useEffect(()=>()=>{clearInterval(tickRef.current);schedNotifTimers.current.forEach(clearTimeout);relWL();},[]);
   useEffect(()=>{askNotif();},[]);
 
   // Ring sizing
@@ -727,11 +728,64 @@ function SprintRunner({sprint,onClose,onLogRun,onComplete}){
     obs.observe(el);return()=>obs.disconnect();
   },[]);
 
-  // Wake lock
+  // ── Upfront notification scheduling ────────────────────────────
+  // Schedule OS notifications for every task transition so they fire
+  // even when Chrome is backgrounded / screen is off.
+  const schedNotifTimers=useRef([]);
+  const scheduleAllNotifs=useCallback((taskList,startIdx,startSecs)=>{
+    // Cancel previous
+    schedNotifTimers.current.forEach(clearTimeout);
+    schedNotifTimers.current=[];
+    if(!("Notification" in window)||Notification.permission!=="granted")return;
+    let delay=(startSecs)*1000; // ms until first task completes
+    for(let i=startIdx+1;i<taskList.length;i++){
+      const task=taskList[i];
+      const d=delay;
+      schedNotifTimers.current.push(setTimeout(()=>{
+        if(!T.current.running)return;
+        try{new Notification(`⚡ ${task.title}`,{body:`Task ${i+1}/${taskList.length} · ${fmtSecs(task.seconds||0)}`,tag:"sprint-task",renotify:true,silent:false});}catch{}
+      },d));
+      delay+=task.seconds*1000;
+    }
+    // Final "done" notification
+    schedNotifTimers.current.push(setTimeout(()=>{
+      if(!T.current.running)return;
+      try{new Notification("✓ Sprint Complete!",{body:"All tasks finished.",tag:"sprint-done",renotify:true});}catch{}
+    },delay));
+  },[]);
+
+  // Wake lock + background recalculation on visibility change
   useEffect(()=>{
-    if(phase==="running"){acqWL();document.addEventListener("visibilitychange",reacqWL);}
-    else{relWL();document.removeEventListener("visibilitychange",reacqWL);}
-    return()=>{relWL();document.removeEventListener("visibilitychange",reacqWL);};
+    if(phase!=="running")return;
+    acqWL();
+
+    const onVisible=async()=>{
+      await acqWL();
+      if(!T.current.running||T.current.transitioning)return;
+      // Recalculate exact position using wall clock
+      const elapsed=Math.floor((Date.now()-T.current.taskStartedAt)/1000);
+      const taskSecs=T.current.tasks[T.current.taskIdx]?.seconds||30;
+      const remaining=taskSecs-elapsed;
+      if(remaining>0){
+        T.current.secs=remaining;
+        setDispSecs(remaining);
+      }else{
+        // Task already finished while backgrounded — advance
+        T.current.transitioning=true;
+        let overflow=Math.abs(remaining);
+        let idx=T.current.taskIdx+1;
+        while(overflow>0&&idx<T.current.tasks.length){
+          const ns=T.current.tasks[idx].seconds||30;
+          if(overflow>=ns){overflow-=ns;idx++;}
+          else{T.current.secs=ns-overflow;overflow=0;}
+        }
+        setTransitioning(true);
+        setTimeout(()=>gotoRef.current(idx),100);
+      }
+    };
+
+    document.addEventListener("visibilitychange",onVisible);
+    return()=>{relWL();document.removeEventListener("visibilitychange",onVisible);};
   },[phase]);
 
   // Tab title
@@ -760,6 +814,7 @@ function SprintRunner({sprint,onClose,onLogRun,onComplete}){
   // ── Timer ───────────────────────────────────
   const finishSprint=useCallback(()=>{
     clearInterval(tickRef.current);
+    schedNotifTimers.current.forEach(clearTimeout);
     T.current.running=false;T.current.transitioning=false;
     setPhase("done");setIsRunning(false);setTransitioning(false);
     clearRunner();
@@ -776,6 +831,9 @@ function SprintRunner({sprint,onClose,onLogRun,onComplete}){
     T.current.taskIdx=idx;
     T.current.secs=ns;
     T.current.transitioning=false;
+    T.current.taskStartedAt=Date.now(); // wall-clock anchor for background recalc
+    // Reschedule all remaining notifications from this task onward
+    scheduleAllNotifs(tks,idx,ns);
     // Snap ring to full instantly, then re-enable smooth drain
     setSnapRing(true);
     requestAnimationFrame(()=>requestAnimationFrame(()=>setSnapRing(false)));
@@ -783,8 +841,8 @@ function SprintRunner({sprint,onClose,onLogRun,onComplete}){
     setDispIdx(idx);
     setDispSecs(ns);
     showNotif(task,idx+1,tks.length);
-    setTimeout(()=>speak(task.title),150);
-  },[finishSprint]);
+    speak(task.title);
+  },[finishSprint,scheduleAllNotifs]);
 
   // Keep gotoRef fresh so setTimeout closures always call latest version
   useEffect(()=>{gotoRef.current=goToTask;},[goToTask]);
@@ -808,7 +866,7 @@ function SprintRunner({sprint,onClose,onLogRun,onComplete}){
         beep(880,200);
         const next=t.taskIdx+1;
         const isLast=next>=t.tasks.length;
-        if(!isLast)setTimeout(()=>{beep(660,120,.18);speak(t.tasks[next].title);},200);
+        if(!isLast)setTimeout(()=>beep(660,120,.18),200);
         setTimeout(()=>gotoRef.current(next),isLast?400:1400);
       }
     },1000);
@@ -817,11 +875,12 @@ function SprintRunner({sprint,onClose,onLogRun,onComplete}){
   const startSprint=()=>{
     if(tasks.length===0)return;
     const ft=tasks[0];
-    T.current={running:true,transitioning:false,secs:ft.seconds||30,taskIdx:0,elapsed:0,tasks};
+    T.current={running:true,transitioning:false,secs:ft.seconds||30,taskIdx:0,elapsed:0,tasks,taskStartedAt:Date.now()};
     setPhase("running");setIsRunning(true);
     setDispIdx(0);setDispSecs(ft.seconds||30);setDispElapsed(0);setTransitioning(false);
     showNotif(ft,1,tasks.length);
-    setTimeout(()=>speak(ft.title),100);
+    scheduleAllNotifs(tasks,0,ft.seconds||30);
+    speak(ft.title);
     startInterval();
   };
 
@@ -839,6 +898,7 @@ function SprintRunner({sprint,onClose,onLogRun,onComplete}){
   const prevTask=()=>{if(T.current.taskIdx===0)return;T.current.transitioning=true;gotoRef.current(T.current.taskIdx-1);};
   const stopSprint=()=>{
     clearInterval(tickRef.current);
+    schedNotifTimers.current.forEach(clearTimeout);
     T.current.running=false;T.current.transitioning=false;
     setIsRunning(false);setPhase("idle");
     setDispIdx(0);setDispSecs(tasks[0]?.seconds||30);setDispElapsed(0);setTransitioning(false);
@@ -849,7 +909,11 @@ function SprintRunner({sprint,onClose,onLogRun,onComplete}){
   // Restore: auto-resume if we were mid-run when page reloaded
   useEffect(()=>{
     if(restore?.running&&restore?.phase==="running"){
-      T.current.running=true;setIsRunning(true);setPhase("running");startInterval();
+      T.current.running=true;
+      T.current.taskStartedAt=Date.now()-(((restore.secs!==undefined?(tasks[T.current.taskIdx]?.seconds||30)-restore.secs:0))*1000);
+      setIsRunning(true);setPhase("running");
+      scheduleAllNotifs(tasks,T.current.taskIdx,T.current.secs);
+      startInterval();
     }
   // eslint-disable-next-line
   },[]);
