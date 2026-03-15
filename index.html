@@ -958,6 +958,7 @@ function SprintRunner({sprint,user,onClose,onLogRun,onComplete}){
   const [ringSize,setRingSize]=useState(300);
   const [transitioning,setTransitioning]=useState(false);
   const [expandedNote,setExpandedNote]=useState(false);
+  const [snapRing,setSnapRing]=useState(false);
 
   const containerRef=useRef(null);
   const tickRef=useRef(null);
@@ -1026,23 +1027,37 @@ function SprintRunner({sprint,user,onClose,onLogRun,onComplete}){
   const totalRemaining=useMemo(()=>tasks.slice(taskIdx).reduce((a,t,i)=>a+(i===0?secs:(t.seconds||0)),0),[tasks,taskIdx,secs]);
 
   const goToTask=useCallback((idx)=>{
-    clearInterval(tickRef.current);
-    setTransitioning(false);transitioningRef.current=false;
+    // Sync ref updates FIRST so the live interval reads correct values immediately
+    transitioningRef.current=false;
+
     if(idx>=tasks.length){
-      setPhase("done");setRunning(false);runningRef.current=false;
+      // Sprint done — only place we actually kill the interval
+      clearInterval(tickRef.current);
       clearInterval(elapsedRef.current);
+      setTransitioning(false);
+      setPhase("done");setRunning(false);runningRef.current=false;
       try{window.speechSynthesis.cancel();}catch{}
       clearRunnerState();
       setTimeout(()=>{chime();speak("Sprint complete! Great work.");},100);
       return;
     }
     const task=tasks[idx];
-    setTaskIdx(idx);setSecs(task.seconds||30);
+    // Sync ref updates so interval reads new values on very next tick
+    secsRef.current=task.seconds||30;
+    taskIdxRef.current=idx;
+    // Snap ring instantly then re-enable smooth transition
+    setSnapRing(true);
+    requestAnimationFrame(()=>requestAnimationFrame(()=>setSnapRing(false)));
+    // Async state updates (batched)
+    setTransitioning(false);
+    setTaskIdx(idx);
+    setSecs(task.seconds||30);
     showTaskNotif(task,idx+1,tasks.length);
     setTimeout(()=>speak(task.title),200);
   },[tasks]);
 
-  // Main tick — side effects NEVER inside a setState updater (React 18 may call updaters multiple times)
+  // Main tick — interval NEVER dies mid-sprint. Blocked by transitioningRef during transitions.
+  // All refs are updated synchronously so interval always reads fresh values.
   useEffect(()=>{
     if(!running||phase!=="running")return;
     clearInterval(tickRef.current);
@@ -1051,15 +1066,14 @@ function SprintRunner({sprint,user,onClose,onLogRun,onComplete}){
       const cur=secsRef.current;
       const n=cur-1;
 
-      // Countdown cues
       if(n===3)speak("Three");
       else if(n===2)speak("Two");
       else if(n===1)speak("One");
 
       if(n<=0){
-        // Task complete — all side effects here, NOT inside setState
+        // Don't clearInterval — keep it running, blocked by transitioningRef
         setSecs(0);
-        clearInterval(tickRef.current);
+        secsRef.current=0;
         setTransitioning(true);
         transitioningRef.current=true;
         beep(880,200);
@@ -1070,6 +1084,7 @@ function SprintRunner({sprint,user,onClose,onLogRun,onComplete}){
         setTimeout(()=>goToTask(next),last?400:1400);
       }else{
         setSecs(n);
+        secsRef.current=n;
       }
     },1000);
     return()=>clearInterval(tickRef.current);
@@ -1103,8 +1118,15 @@ function SprintRunner({sprint,user,onClose,onLogRun,onComplete}){
     if(running){setRunning(false);runningRef.current=false;clearInterval(tickRef.current);clearInterval(elapsedRef.current);try{window.speechSynthesis.cancel();}catch{}}
     else{setRunning(true);runningRef.current=true;speak(currentTask?.title||"Resuming");}
   };
-  const skipTask=()=>{clearInterval(tickRef.current);goToTask(taskIdxRef.current+1);};
-  const prevTask=()=>{if(taskIdx===0)return;clearInterval(tickRef.current);goToTask(taskIdxRef.current-1);};
+  const skipTask=()=>{
+    transitioningRef.current=true; // briefly block interval while we switch
+    goToTask(taskIdxRef.current+1);
+  };
+  const prevTask=()=>{
+    if(taskIdxRef.current===0)return;
+    transitioningRef.current=true;
+    goToTask(taskIdxRef.current-1);
+  };
   const stopSprint=()=>{
     clearInterval(tickRef.current);clearInterval(elapsedRef.current);
     setRunning(false);runningRef.current=false;setPhase("idle");
@@ -1220,7 +1242,7 @@ function SprintRunner({sprint,user,onClose,onLogRun,onComplete}){
               <circle cx={CX} cy={CY} r={R} fill="none"
                 stroke={phase==="running"?(transitioning?ORANGE:ringColor):"#2a2a2a"}
                 strokeWidth={sw} strokeLinecap="round" strokeDasharray={C} strokeDashoffset={C*(1-pct)}
-                style={{transition:"stroke-dashoffset .85s linear,stroke .35s"}}/>
+                style={{transition:snapRing?"stroke .2s":"stroke-dashoffset 0.95s linear,stroke .35s"}}/>
             </svg>
             <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:3}}>
               <div style={{fontSize:Math.round(ringSize*0.25),fontWeight:900,lineHeight:1,fontVariantNumeric:"tabular-nums",
