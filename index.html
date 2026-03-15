@@ -8,7 +8,7 @@
 <meta name="mobile-web-app-capable" content="yes"/>
 <meta name="theme-color" content="#000000"/>
 <meta name="apple-mobile-web-app-title" content="SPRINT"/>
-<title>SPRINT v2.5</title>
+<title>SPRINT v2.6</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -32,7 +32,7 @@ SQL MIGRATIONS — run once in Supabase SQL editor:
     for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
   -- If table already exists, add missing columns:
-  alter table sprints_v2 add column if not exists scheduled_time time;
+  alter table sprints_v2 add column if not exists frequency int default 1;
   alter table sprints_v2 add column if not exists daily_state jsonb default '{}'::jsonb;
 
   create table if not exists sprint_runs (
@@ -357,7 +357,7 @@ function InstallBanner({onDismiss}){
 }
 
 /* ── Sprint Preview (tap card to open) ────────── */
-function SprintPreview({sprint,settings,onClose,onRun,onSaveSkipped}){
+function SprintPreview({sprint,settings,onClose,onRun,onEdit,onSaveSkipped}){
   const resetHour=settings.resetHour??4;
   const tasks=sprint.tasks||[];
   const [skipped,setSkipped]=useState(()=>new Set(resolveDS(sprint.daily_state,resetHour).skipped||[]));
@@ -385,6 +385,7 @@ function SprintPreview({sprint,settings,onClose,onRun,onSaveSkipped}){
             </div>
           </div>
           {skipped.size>0&&<button onClick={resetAll} style={{padding:"4px 10px",borderRadius:6,border:`1px solid ${BORDER}`,background:"transparent",color:MUTED,fontSize:11,cursor:"pointer",fontFamily:"inherit"}}>Reset</button>}
+          <button onClick={()=>{onClose();onEdit(sprint);}} style={{padding:"5px 12px",borderRadius:7,border:`1px solid ${BORDER}`,background:"transparent",color:MUTED,fontSize:12,cursor:"pointer",fontFamily:"inherit",fontWeight:600}}>Edit</button>
           <button onClick={onClose} style={{background:"none",border:"none",color:MUTED,fontSize:20,cursor:"pointer",lineHeight:1,padding:"2px 6px"}}>✕</button>
         </div>
         <div style={{fontSize:10,color:MUTED,letterSpacing:2,fontWeight:700,padding:"0 16px 8px"}}>ALL INCLUDED — TAP TO EXCLUDE</div>
@@ -425,7 +426,13 @@ function SprintList({user,sprints,loading,settings,onRun,onEdit,onCreate,onDupli
   },[sprints,resetHour]);
 
   const [showInstall,setShowInstall]=useState(()=>{try{return!localStorage.getItem("sprint_install_dismissed")}catch{return true}});
-  const [showCompleted,setShowCompleted]=useState(false);
+  const [showCompleted,setShowCompleted]=useState(()=>{try{return localStorage.getItem("sprint_show_completed")==="1"}catch{return false}});
+
+  const toggleShowCompleted=()=>setShowCompleted(v=>{
+    const next=!v;
+    try{localStorage.setItem("sprint_show_completed",next?"1":"0")}catch{}
+    return next;
+  });
 
   // Always sort by scheduled_time (nulls last), then creation order
   const sorted=useMemo(()=>[...sprints].sort((a,b)=>{
@@ -438,14 +445,13 @@ function SprintList({user,sprints,loading,settings,onRun,onEdit,onCreate,onDupli
 
   return(
     <div style={{height:"100%",display:"flex",flexDirection:"column",background:"#000"}}>
-      <div style={{padding:"18px 18px 14px",borderBottom:`1px solid ${BORDER}`,display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
+      <div style={{padding:"12px 16px 10px",borderBottom:`1px solid ${BORDER}`,display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
         <div style={{flex:1}}>
-          <div style={{fontWeight:900,fontSize:22,letterSpacing:-2,lineHeight:1}}><span style={{color:LIME}}>⚡</span><span style={{color:TEXT}}> SPRINT</span></div>
-          <div style={{fontSize:10,color:MUTED,letterSpacing:3,marginTop:2}}>v2.5</div>
+          <div style={{fontWeight:900,fontSize:17,letterSpacing:-1,lineHeight:1}}><span style={{color:LIME}}>⚡</span><span style={{color:TEXT}}> SPRINT</span> <span style={{fontSize:10,color:MUTED,letterSpacing:2,fontWeight:400}}>v2.6</span></div>
         </div>
         {sorted.length>0&&(
-          <div style={{background:doneCount===sorted.length?"#0a1f0a":INSET,border:`1px solid ${doneCount===sorted.length?GREEN+"44":BORDER}`,borderRadius:8,padding:"4px 10px",display:"flex",alignItems:"center",gap:5}}>
-            <span style={{fontSize:13,color:doneCount===sorted.length?GREEN:MUTED,fontWeight:700}}>{doneCount}/{sorted.length}</span>
+          <div style={{background:doneCount===sorted.length?"#0a1f0a":INSET,border:`1px solid ${doneCount===sorted.length?GREEN+"44":BORDER}`,borderRadius:7,padding:"3px 9px",display:"flex",alignItems:"center",gap:4}}>
+            <span style={{fontSize:12,color:doneCount===sorted.length?GREEN:MUTED,fontWeight:700}}>{doneCount}/{sorted.length}</span>
             <span style={{fontSize:10,color:doneCount===sorted.length?GREEN:MUTED}}>done</span>
           </div>
         )}
@@ -484,6 +490,7 @@ function SprintList({user,sprints,loading,settings,onRun,onEdit,onCreate,onDupli
                     {sp.scheduled_time&&<span style={{color:BORDER}}>·</span>}
                     <span>{(sp.tasks||[]).length} tasks</span>
                     {totalSecs(sp.tasks)>0&&<><span style={{color:BORDER}}>·</span><span style={{color:ORANGE}}>{fmtSecs(totalSecs(sp.tasks))}</span></>}
+                    {(sp.frequency&&sp.frequency>1)&&<><span style={{color:BORDER}}>·</span><span style={{color:MUTED}}>every {sp.frequency}d</span></>}
                   </div>
                 </div>
                 <div style={{display:"flex",gap:5,flexShrink:0,alignItems:"center"}}>
@@ -517,7 +524,7 @@ function SprintList({user,sprints,loading,settings,onRun,onEdit,onCreate,onDupli
       {/* Footer: toggle + new button */}
       <div style={{padding:"10px 16px 22px",borderTop:`1px solid ${BORDER}`,flexShrink:0,display:"flex",flexDirection:"column",gap:8}}>
         {doneCount>0&&(
-          <button onClick={()=>setShowCompleted(s=>!s)}
+          <button onClick={toggleShowCompleted}
             style={{width:"100%",padding:"9px",borderRadius:8,border:`1px solid ${BORDER}`,background:"transparent",color:MUTED,fontSize:12,cursor:"pointer",fontFamily:"inherit",fontWeight:600}}>
             {showCompleted?`Hide ${doneCount} completed sprint${doneCount!==1?"s":""}`:`Show ${doneCount} completed sprint${doneCount!==1?"s":""}`}
           </button>
@@ -536,6 +543,7 @@ function SprintEditor({sprint,onSave,onCancel,onDelete}){
   const [name,setName]=useState(sprint?.name||"");
   const [emoji,setEmoji]=useState(sprint?.emoji||"⚡");
   const [scheduledTime,setScheduledTime]=useState(sprint?.scheduled_time||"");
+  const [frequency,setFrequency]=useState(sprint?.frequency??1);
   const [tasks,setTasks]=useState((sprint?.tasks||[]).map(t=>({...t})));
   const [newTitle,setNewTitle]=useState("");
   const [newSecs,setNewSecs]=useState(30);
@@ -552,7 +560,7 @@ function SprintEditor({sprint,onSave,onCancel,onDelete}){
   const updTask=(id,k,v)=>setTasks(ts=>ts.map(t=>t.id===id?{...t,[k]:v}:t));
   const moveUp=i=>{if(i===0)return;const a=[...tasks];[a[i-1],a[i]]=[a[i],a[i-1]];setTasks(a);};
   const moveDn=i=>{if(i===tasks.length-1)return;const a=[...tasks];[a[i],a[i+1]]=[a[i+1],a[i]];setTasks(a);};
-  const save=async()=>{if(!name.trim())return;setSaving(true);await onSave({...(sprint||{}),name:name.trim(),emoji,scheduled_time:scheduledTime||null,tasks});setSaving(false);};
+  const save=async()=>{if(!name.trim())return;setSaving(true);await onSave({...(sprint||{}),name:name.trim(),emoji,scheduled_time:scheduledTime||null,frequency:Number(frequency)||1,tasks});setSaving(false);};
   const inp={padding:"10px 12px",borderRadius:8,border:`1px solid ${BORDER}`,background:CARD,color:TEXT,fontSize:14,fontFamily:"inherit",outline:"none"};
 
   return(
@@ -576,6 +584,26 @@ function SprintEditor({sprint,onSave,onCancel,onDelete}){
             {scheduledTime&&<button onClick={()=>setScheduledTime("")} style={{background:"none",border:`1px solid ${BORDER}`,borderRadius:7,padding:"10px 12px",color:MUTED,cursor:"pointer",fontSize:12,fontFamily:"inherit"}}>Clear</button>}
           </div>
           {scheduledTime&&<div style={{fontSize:11,color:ORANGE,marginTop:6,fontWeight:700}}>⏰ {fmtTime12(scheduledTime)}</div>}
+        </div>
+
+        <div style={{marginBottom:22}}>
+          <div style={{fontSize:10,color:MUTED,letterSpacing:2,fontWeight:700,marginBottom:8}}>FREQUENCY <span style={{color:BORDER,fontWeight:400,letterSpacing:0,fontSize:10}}> — run every N days (1 = daily)</span></div>
+          <div style={{display:"flex",gap:8,alignItems:"center"}}>
+            <button onClick={()=>setFrequency(f=>Math.max(1,Number(f)-1))} style={{background:"none",border:`1px solid ${BORDER}`,borderRadius:7,width:40,height:40,color:MUTED,cursor:"pointer",fontSize:18,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>−</button>
+            <div style={{flex:1,textAlign:"center"}}>
+              <div style={{fontSize:24,fontWeight:900,color:frequency===1?LIME:ORANGE,fontVariantNumeric:"tabular-nums"}}>
+                {frequency===1?"Daily":`Every ${frequency} days`}
+              </div>
+            </div>
+            <button onClick={()=>setFrequency(f=>Math.min(30,Number(f)+1))} style={{background:"none",border:`1px solid ${BORDER}`,borderRadius:7,width:40,height:40,color:MUTED,cursor:"pointer",fontSize:18,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>+</button>
+          </div>
+          <div style={{display:"flex",gap:5,flexWrap:"wrap",marginTop:10}}>
+            {[1,2,3,4,5,7,10,14].map(n=>(
+              <button key={n} onClick={()=>setFrequency(n)} style={{padding:"5px 12px",borderRadius:7,border:`1px solid ${frequency===n?(n===1?LIME:ORANGE):BORDER}`,background:frequency===n?"#0a0a0a":"transparent",color:frequency===n?(n===1?LIME:ORANGE):MUTED,fontSize:11,cursor:"pointer",fontFamily:"inherit",fontWeight:frequency===n?700:400}}>
+                {n===1?"Daily":n===7?"Weekly":n===14?"Biweekly":`${n}d`}
+              </button>
+            ))}
+          </div>
         </div>
 
         <div style={{fontSize:10,color:MUTED,letterSpacing:2,fontWeight:700,marginBottom:10}}>TASKS · {tasks.length}{totalSecs(tasks)>0&&` · ${fmtSecs(totalSecs(tasks))} total`}</div>
@@ -1062,9 +1090,9 @@ function App(){
   const saveSprint=async data=>{
     const uid=user?.id;if(!uid)return;
     if(data.id){
-      await db.from("sprints_v2").update({name:data.name,emoji:data.emoji,scheduled_time:data.scheduled_time,tasks:data.tasks}).eq("id",data.id).eq("user_id",uid);
+      await db.from("sprints_v2").update({name:data.name,emoji:data.emoji,scheduled_time:data.scheduled_time,frequency:data.frequency??1,tasks:data.tasks}).eq("id",data.id).eq("user_id",uid);
     }else{
-      await db.from("sprints_v2").insert({user_id:uid,name:data.name,emoji:data.emoji,scheduled_time:data.scheduled_time||null,tasks:data.tasks||[]});
+      await db.from("sprints_v2").insert({user_id:uid,name:data.name,emoji:data.emoji,scheduled_time:data.scheduled_time||null,frequency:data.frequency??1,tasks:data.tasks||[]});
     }
     await loadSprints(user);setEditTarget(undefined);setScreen("list");
   };
@@ -1145,6 +1173,7 @@ function App(){
         <SprintPreview sprint={previewTarget} settings={settings}
           onClose={()=>setPreviewTarget(null)}
           onRun={sp=>{setPreviewTarget(null);setRunTarget(sp);setScreen("run");}}
+          onEdit={sp=>{setPreviewTarget(null);setEditTarget(sp);setScreen("edit");}}
           onSaveSkipped={(id,ids)=>saveDailyState(id,{skipped:ids})}
         />
       )}
