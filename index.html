@@ -8,7 +8,7 @@
 <meta name="mobile-web-app-capable" content="yes"/>
 <meta name="theme-color" content="#000000"/>
 <meta name="apple-mobile-web-app-title" content="SPRINT"/>
-<title>SPRINT v2.6</title>
+<title>SPRINT v2.7</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -34,6 +34,7 @@ SQL MIGRATIONS — run once in Supabase SQL editor:
   -- If table already exists, add missing columns:
   alter table sprints_v2 add column if not exists frequency int default 1;
   alter table sprints_v2 add column if not exists daily_state jsonb default '{}'::jsonb;
+  alter table sprints_v2 add column if not exists frequency_days text default null;
 
   create table if not exists sprint_runs (
     id uuid primary key default gen_random_uuid(),
@@ -104,6 +105,8 @@ const LIME="#CAFF4C",BORDER="#2a2a2a",TEXT="#e8e8e8",MUTED="#555";
 const RED="#FF453A",ORANGE="#FF9F0A",GREEN="#30D158";
 const CARD="#111",CARD2="#161616",INSET="#0a0a0a";
 const genId=()=>crypto.randomUUID();
+const DAY_ABBR=['MON','TUE','WED','THU','FRI','SAT','SUN'];
+const DAY_LABEL={MON:'Mon',TUE:'Tue',WED:'Wed',THU:'Thu',FRI:'Fri',SAT:'Sat',SUN:'Sun'};
 const fmtSecs=s=>{if(s<0)s=0;return `${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`;};
 const fmtTime12=t=>{if(!t)return"";const[h,m]=t.split(":");const hr=parseInt(h);return `${hr===0?12:hr>12?hr-12:hr}:${m} ${hr<12?"AM":"PM"}`;};
 const fmtDate=d=>new Date(d).toLocaleDateString("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"});
@@ -356,8 +359,8 @@ function InstallBanner({onDismiss}){
   );
 }
 
-/* ── Sprint Preview (tap card to open) ────────── */
-function SprintPreview({sprint,settings,onClose,onRun,onEdit,onSaveSkipped}){
+/* ── Sprint Detail (full page, tap card to open) ── */
+function SprintDetail({sprint,settings,onClose,onRun,onEdit,onDuplicate,onSaveSkipped}){
   const resetHour=settings.resetHour??4;
   const tasks=sprint.tasks||[];
   const [skipped,setSkipped]=useState(()=>new Set(resolveDS(sprint.daily_state,resetHour).skipped||[]));
@@ -371,46 +374,75 @@ function SprintPreview({sprint,settings,onClose,onRun,onEdit,onSaveSkipped}){
     });
   };
   const resetAll=()=>{setSkipped(new Set());onSaveSkipped(sprint.id,[]);};
+  const freqLabel=sprint.frequency_days
+    ?sprint.frequency_days.split(',').map(d=>DAY_LABEL[d]||d).join(' · ')
+    :(sprint.frequency&&sprint.frequency>1)?`Every ${sprint.frequency}d`:'Daily';
   return(
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.82)",zIndex:500,display:"flex",alignItems:"flex-end"}} onClick={onClose}>
-      <div onClick={e=>e.stopPropagation()} style={{width:"100%",maxHeight:"80vh",display:"flex",flexDirection:"column",background:"#111",borderRadius:"16px 16px 0 0",border:`1px solid ${BORDER}`,borderBottom:"none"}}>
-        <div style={{padding:"16px 16px 12px",display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
-          <span style={{fontSize:22}}>{sprint.emoji||"⚡"}</span>
+    <div style={{position:"fixed",inset:0,background:"#000",zIndex:500,display:"flex",flexDirection:"column"}}>
+      {/* Header */}
+      <div style={{padding:"14px 16px 12px",borderBottom:`1px solid ${BORDER}`,flexShrink:0}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+          <button onClick={onClose} style={{background:"none",border:"none",color:MUTED,fontSize:26,cursor:"pointer",lineHeight:1,padding:"0 4px",marginLeft:-4}}>‹</button>
+          <span style={{fontSize:24,flexShrink:0}}>{sprint.emoji||"⚡"}</span>
           <div style={{flex:1,minWidth:0}}>
-            <div style={{fontWeight:800,fontSize:15,color:TEXT,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{sprint.name}</div>
+            <div style={{fontWeight:900,fontSize:16,color:TEXT,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{sprint.name}</div>
             <div style={{fontSize:11,color:MUTED,marginTop:1}}>
               {skipped.size>0
-                ?<span>Excluding <span style={{color:ORANGE,fontWeight:700}}>{skipped.size}</span> · <span style={{color:LIME,fontWeight:700}}>{activeTasks.length}</span> will run</span>
+                ?<span>Excluding <span style={{color:ORANGE,fontWeight:700}}>{skipped.size}</span> · <span style={{color:LIME,fontWeight:700}}>{activeTasks.length}</span> active</span>
                 :<span>{tasks.length} tasks · {fmtSecs(totalSecs(tasks))}</span>}
             </div>
           </div>
-          {skipped.size>0&&<button onClick={resetAll} style={{padding:"4px 10px",borderRadius:6,border:`1px solid ${BORDER}`,background:"transparent",color:MUTED,fontSize:11,cursor:"pointer",fontFamily:"inherit"}}>Reset</button>}
-          <button onClick={()=>{onClose();onEdit(sprint);}} style={{padding:"5px 12px",borderRadius:7,border:`1px solid ${BORDER}`,background:"transparent",color:MUTED,fontSize:12,cursor:"pointer",fontFamily:"inherit",fontWeight:600}}>Edit</button>
-          <button onClick={onClose} style={{background:"none",border:"none",color:MUTED,fontSize:20,cursor:"pointer",lineHeight:1,padding:"2px 6px"}}>✕</button>
         </div>
-        <div style={{fontSize:10,color:MUTED,letterSpacing:2,fontWeight:700,padding:"0 16px 8px"}}>ALL INCLUDED — TAP TO EXCLUDE</div>
-        <div style={{flex:1,overflowY:"auto",padding:"0 16px 16px"}}>
-          {tasks.map((t,i)=>{
-            const isEx=skipped.has(t.id);
-            return(
-              <button key={t.id} onClick={()=>toggle(t.id)} style={{width:"100%",display:"flex",alignItems:"center",gap:10,padding:"10px 12px",borderRadius:9,marginBottom:6,cursor:"pointer",background:isEx?"#0e0a00":CARD2,border:`1px solid ${isEx?ORANGE+"44":GREEN+"33"}`,textAlign:"left",fontFamily:"inherit",transition:"all .15s"}}>
-                <div style={{width:20,height:20,borderRadius:5,flexShrink:0,border:`2px solid ${isEx?ORANGE:GREEN}`,background:isEx?"transparent":GREEN+"22",display:"flex",alignItems:"center",justifyContent:"center",transition:"all .15s"}}>
-                  {!isEx&&<span style={{color:GREEN,fontSize:11,fontWeight:900,lineHeight:1}}>✓</span>}
-                  {isEx&&<span style={{color:ORANGE,fontSize:11,fontWeight:900,lineHeight:1}}>✕</span>}
-                </div>
-                <span style={{fontSize:10,color:MUTED,width:16,textAlign:"right",flexShrink:0}}>{i+1}.</span>
-                <span style={{flex:1,fontSize:13,color:isEx?MUTED:TEXT,textDecoration:isEx?"line-through":"none",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.title}</span>
-                {t.notes&&!isEx&&<span style={{fontSize:10,color:ORANGE,flexShrink:0}}>📝</span>}
-                <span style={{fontSize:11,color:isEx?BORDER:ORANGE,flexShrink:0,fontVariantNumeric:"tabular-nums"}}>{fmtSecs(t.seconds||0)}</span>
-              </button>
-            );
-          })}
-        </div>
-        <div style={{padding:"10px 16px 32px",borderTop:`1px solid ${BORDER}`,flexShrink:0}}>
-          <button onClick={()=>onRun({...sprint,tasks:activeTasks})} disabled={activeTasks.length===0} style={{width:"100%",padding:"14px",borderRadius:10,border:"none",background:activeTasks.length===0?"#2a2a2a":LIME,color:activeTasks.length===0?MUTED:"#000",fontWeight:900,fontSize:15,cursor:activeTasks.length===0?"default":"pointer",fontFamily:"inherit"}}>
-            {activeTasks.length===0?"No tasks to run":`▶ Run ${activeTasks.length} Task${activeTasks.length!==1?"s":""} · ${fmtSecs(totalSecs(activeTasks))}`}
+        {/* Action buttons row */}
+        <div style={{display:"flex",gap:7,alignItems:"center"}}>
+          <button onClick={()=>onEdit(sprint)}
+            style={{display:"flex",alignItems:"center",gap:5,padding:"7px 14px",borderRadius:8,border:`1px solid ${BORDER}`,background:"transparent",color:TEXT,fontSize:13,cursor:"pointer",fontFamily:"inherit",fontWeight:600}}>
+            ✏️ <span>Edit</span>
           </button>
+          <button onClick={()=>onDuplicate(sprint)}
+            style={{display:"flex",alignItems:"center",gap:5,padding:"7px 14px",borderRadius:8,border:`1px solid ${BORDER}`,background:"transparent",color:TEXT,fontSize:13,cursor:"pointer",fontFamily:"inherit",fontWeight:600}}>
+            📋 <span>Duplicate</span>
+          </button>
+          {skipped.size>0&&(
+            <button onClick={resetAll}
+              style={{padding:"7px 12px",borderRadius:8,border:`1px solid ${BORDER}`,background:"transparent",color:MUTED,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
+              ↺ Reset
+            </button>
+          )}
+          <div style={{flex:1}}/>
+          {sprint.scheduled_time&&<span style={{fontSize:11,color:ORANGE,fontWeight:700}}>{fmtTime12(sprint.scheduled_time)}</span>}
+          <span style={{fontSize:11,color:MUTED,background:INSET,border:`1px solid ${BORDER}`,borderRadius:6,padding:"3px 8px"}}>{freqLabel}</span>
         </div>
+      </div>
+
+      {/* Task list */}
+      <div style={{flex:1,overflowY:"auto",padding:"10px 16px 8px"}}>
+        <div style={{fontSize:10,color:MUTED,letterSpacing:2,fontWeight:700,marginBottom:8}}>ALL TASKS — TAP TO EXCLUDE</div>
+        {tasks.length===0&&<div style={{textAlign:"center",padding:"60px 0",color:MUTED,fontSize:13}}>No tasks in this sprint yet.</div>}
+        {tasks.map((t,i)=>{
+          const isEx=skipped.has(t.id);
+          return(
+            <button key={t.id} onClick={()=>toggle(t.id)}
+              style={{width:"100%",display:"flex",alignItems:"center",gap:10,padding:"11px 12px",borderRadius:10,marginBottom:6,cursor:"pointer",background:isEx?"#0e0a00":CARD2,border:`1px solid ${isEx?ORANGE+"44":GREEN+"33"}`,textAlign:"left",fontFamily:"inherit",transition:"all .15s"}}>
+              <div style={{width:22,height:22,borderRadius:5,flexShrink:0,border:`2px solid ${isEx?ORANGE:GREEN}`,background:isEx?"transparent":GREEN+"22",display:"flex",alignItems:"center",justifyContent:"center",transition:"all .15s"}}>
+                {!isEx&&<span style={{color:GREEN,fontSize:11,fontWeight:900,lineHeight:1}}>✓</span>}
+                {isEx&&<span style={{color:ORANGE,fontSize:11,fontWeight:900,lineHeight:1}}>✕</span>}
+              </div>
+              <span style={{fontSize:10,color:MUTED,width:18,textAlign:"right",flexShrink:0}}>{i+1}.</span>
+              <span style={{flex:1,fontSize:14,color:isEx?MUTED:TEXT,textDecoration:isEx?"line-through":"none",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontWeight:isEx?400:600}}>{t.title}</span>
+              {t.notes&&!isEx&&<span style={{fontSize:11,color:ORANGE,flexShrink:0}}>📝</span>}
+              <span style={{fontSize:12,color:isEx?BORDER:ORANGE,flexShrink:0,fontVariantNumeric:"tabular-nums",fontWeight:700}}>{fmtSecs(t.seconds||0)}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Run footer */}
+      <div style={{padding:"10px 16px 32px",borderTop:`1px solid ${BORDER}`,flexShrink:0}}>
+        <button onClick={()=>onRun({...sprint,tasks:activeTasks})} disabled={activeTasks.length===0}
+          style={{width:"100%",padding:"16px",borderRadius:12,border:"none",background:activeTasks.length===0?"#2a2a2a":LIME,color:activeTasks.length===0?MUTED:"#000",fontWeight:900,fontSize:16,cursor:activeTasks.length===0?"default":"pointer",fontFamily:"inherit",letterSpacing:-0.5}}>
+          {activeTasks.length===0?"No tasks to run":`▶ Run ${activeTasks.length} Task${activeTasks.length!==1?"s":""} · ${fmtSecs(totalSecs(activeTasks))}`}
+        </button>
       </div>
     </div>
   );
@@ -490,7 +522,10 @@ function SprintList({user,sprints,loading,settings,onRun,onEdit,onCreate,onDupli
                     {sp.scheduled_time&&<span style={{color:BORDER}}>·</span>}
                     <span>{(sp.tasks||[]).length} tasks</span>
                     {totalSecs(sp.tasks)>0&&<><span style={{color:BORDER}}>·</span><span style={{color:ORANGE}}>{fmtSecs(totalSecs(sp.tasks))}</span></>}
-                    {(sp.frequency&&sp.frequency>1)&&<><span style={{color:BORDER}}>·</span><span style={{color:MUTED}}>every {sp.frequency}d</span></>}
+                    {sp.frequency_days
+                      ?<><span style={{color:BORDER}}>·</span><span style={{color:LIME,fontWeight:700,fontSize:10}}>{sp.frequency_days.split(',').map(d=>DAY_LABEL[d]||d).join(' · ')}</span></>
+                      :(sp.frequency&&sp.frequency>1)&&<><span style={{color:BORDER}}>·</span><span style={{color:MUTED}}>every {sp.frequency}d</span></>
+                    }
                   </div>
                 </div>
                 <div style={{display:"flex",gap:5,flexShrink:0,alignItems:"center"}}>
@@ -544,6 +579,11 @@ function SprintEditor({sprint,onSave,onCancel,onDelete}){
   const [emoji,setEmoji]=useState(sprint?.emoji||"⚡");
   const [scheduledTime,setScheduledTime]=useState(sprint?.scheduled_time||"");
   const [frequency,setFrequency]=useState(sprint?.frequency??1);
+  const [freqMode,setFreqMode]=useState(sprint?.frequency_days?'days':'interval');
+  const [freqDays,setFreqDays]=useState(()=>{
+    if(sprint?.frequency_days)return new Set(sprint.frequency_days.split(',').filter(Boolean));
+    return new Set();
+  });
   const [tasks,setTasks]=useState((sprint?.tasks||[]).map(t=>({...t})));
   const [newTitle,setNewTitle]=useState("");
   const [newSecs,setNewSecs]=useState(30);
@@ -560,7 +600,7 @@ function SprintEditor({sprint,onSave,onCancel,onDelete}){
   const updTask=(id,k,v)=>setTasks(ts=>ts.map(t=>t.id===id?{...t,[k]:v}:t));
   const moveUp=i=>{if(i===0)return;const a=[...tasks];[a[i-1],a[i]]=[a[i],a[i-1]];setTasks(a);};
   const moveDn=i=>{if(i===tasks.length-1)return;const a=[...tasks];[a[i],a[i+1]]=[a[i+1],a[i]];setTasks(a);};
-  const save=async()=>{if(!name.trim())return;setSaving(true);await onSave({...(sprint||{}),name:name.trim(),emoji,scheduled_time:scheduledTime||null,frequency:Number(frequency)||1,tasks});setSaving(false);};
+  const save=async()=>{if(!name.trim())return;setSaving(true);const fd=freqMode==='days'&&freqDays.size>0?DAY_ABBR.filter(d=>freqDays.has(d)).join(','):null;await onSave({...(sprint||{}),name:name.trim(),emoji,scheduled_time:scheduledTime||null,frequency:Number(frequency)||1,frequency_days:fd,tasks});setSaving(false);};
   const inp={padding:"10px 12px",borderRadius:8,border:`1px solid ${BORDER}`,background:CARD,color:TEXT,fontSize:14,fontFamily:"inherit",outline:"none"};
 
   return(
@@ -587,23 +627,50 @@ function SprintEditor({sprint,onSave,onCancel,onDelete}){
         </div>
 
         <div style={{marginBottom:22}}>
-          <div style={{fontSize:10,color:MUTED,letterSpacing:2,fontWeight:700,marginBottom:8}}>FREQUENCY <span style={{color:BORDER,fontWeight:400,letterSpacing:0,fontSize:10}}> — run every N days (1 = daily)</span></div>
-          <div style={{display:"flex",gap:8,alignItems:"center"}}>
-            <button onClick={()=>setFrequency(f=>Math.max(1,Number(f)-1))} style={{background:"none",border:`1px solid ${BORDER}`,borderRadius:7,width:40,height:40,color:MUTED,cursor:"pointer",fontSize:18,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>−</button>
-            <div style={{flex:1,textAlign:"center"}}>
-              <div style={{fontSize:24,fontWeight:900,color:frequency===1?LIME:ORANGE,fontVariantNumeric:"tabular-nums"}}>
-                {frequency===1?"Daily":`Every ${frequency} days`}
-              </div>
-            </div>
-            <button onClick={()=>setFrequency(f=>Math.min(30,Number(f)+1))} style={{background:"none",border:`1px solid ${BORDER}`,borderRadius:7,width:40,height:40,color:MUTED,cursor:"pointer",fontSize:18,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>+</button>
-          </div>
-          <div style={{display:"flex",gap:5,flexWrap:"wrap",marginTop:10}}>
-            {[1,2,3,4,5,7,10,14].map(n=>(
-              <button key={n} onClick={()=>setFrequency(n)} style={{padding:"5px 12px",borderRadius:7,border:`1px solid ${frequency===n?(n===1?LIME:ORANGE):BORDER}`,background:frequency===n?"#0a0a0a":"transparent",color:frequency===n?(n===1?LIME:ORANGE):MUTED,fontSize:11,cursor:"pointer",fontFamily:"inherit",fontWeight:frequency===n?700:400}}>
-                {n===1?"Daily":n===7?"Weekly":n===14?"Biweekly":`${n}d`}
-              </button>
+          <div style={{fontSize:10,color:MUTED,letterSpacing:2,fontWeight:700,marginBottom:8}}>FREQUENCY <span style={{color:BORDER,fontWeight:400,letterSpacing:0,fontSize:10}}> — when this sprint runs</span></div>
+          {/* Mode toggle */}
+          <div style={{display:"flex",gap:6,marginBottom:12}}>
+            {[['interval','Every N Days'],['days','Specific Days']].map(([m,l])=>(
+              <button key={m} onClick={()=>setFreqMode(m)} style={{flex:1,padding:"8px",borderRadius:8,border:`1px solid ${freqMode===m?LIME:BORDER}`,background:freqMode===m?"#0a140a":"transparent",color:freqMode===m?LIME:MUTED,fontSize:12,fontWeight:freqMode===m?700:400,cursor:"pointer",fontFamily:"inherit"}}>{l}</button>
             ))}
           </div>
+          {freqMode==='interval'&&(
+            <>
+              <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                <button onClick={()=>setFrequency(f=>Math.max(1,Number(f)-1))} style={{background:"none",border:`1px solid ${BORDER}`,borderRadius:7,width:40,height:40,color:MUTED,cursor:"pointer",fontSize:18,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>−</button>
+                <div style={{flex:1,textAlign:"center"}}>
+                  <div style={{fontSize:24,fontWeight:900,color:frequency===1?LIME:ORANGE,fontVariantNumeric:"tabular-nums"}}>
+                    {frequency===1?"Daily":`Every ${frequency} days`}
+                  </div>
+                </div>
+                <button onClick={()=>setFrequency(f=>Math.min(30,Number(f)+1))} style={{background:"none",border:`1px solid ${BORDER}`,borderRadius:7,width:40,height:40,color:MUTED,cursor:"pointer",fontSize:18,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>+</button>
+              </div>
+              <div style={{display:"flex",gap:5,flexWrap:"wrap",marginTop:10}}>
+                {[1,2,3,4,5,7,10,14].map(n=>(
+                  <button key={n} onClick={()=>setFrequency(n)} style={{padding:"5px 12px",borderRadius:7,border:`1px solid ${frequency===n?(n===1?LIME:ORANGE):BORDER}`,background:frequency===n?"#0a0a0a":"transparent",color:frequency===n?(n===1?LIME:ORANGE):MUTED,fontSize:11,cursor:"pointer",fontFamily:"inherit",fontWeight:frequency===n?700:400}}>
+                    {n===1?"Daily":n===7?"Weekly":n===14?"Biweekly":`${n}d`}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+          {freqMode==='days'&&(
+            <>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                {DAY_ABBR.map(d=>{
+                  const sel=freqDays.has(d);
+                  return(
+                    <button key={d} onClick={()=>setFreqDays(prev=>{const n=new Set(prev);if(n.has(d))n.delete(d);else n.add(d);return n;})}
+                      style={{padding:"8px 10px",borderRadius:8,border:`1px solid ${sel?LIME:BORDER}`,background:sel?"#0a140a":"transparent",color:sel?LIME:MUTED,fontSize:12,fontWeight:sel?700:400,cursor:"pointer",fontFamily:"inherit",minWidth:42,textAlign:"center"}}>
+                      {DAY_LABEL[d]}
+                    </button>
+                  );
+                })}
+              </div>
+              {freqDays.size>0&&<div style={{fontSize:11,color:LIME,marginTop:8,fontWeight:700}}>Runs: {DAY_ABBR.filter(d=>freqDays.has(d)).map(d=>DAY_LABEL[d]).join(', ')}</div>}
+              {freqDays.size===0&&<div style={{fontSize:11,color:MUTED,marginTop:8}}>Select at least one day.</div>}
+            </>
+          )}
         </div>
 
         <div style={{fontSize:10,color:MUTED,letterSpacing:2,fontWeight:700,marginBottom:10}}>TASKS · {tasks.length}{totalSecs(tasks)>0&&` · ${fmtSecs(totalSecs(tasks))} total`}</div>
@@ -874,6 +941,7 @@ function SprintRunner({sprint,onClose,onLogRun,onComplete}){
   };
 
   const skipTask=()=>{T.current.transitioning=true;gotoRef.current(T.current.taskIdx+1);};
+  const didTask=()=>{T.current.transitioning=true;gotoRef.current(T.current.taskIdx+1);};
   const prevTask=()=>{if(T.current.taskIdx===0)return;T.current.transitioning=true;gotoRef.current(T.current.taskIdx-1);};
   const stopSprint=()=>{
     clearInterval(tickRef.current);
@@ -921,8 +989,8 @@ function SprintRunner({sprint,onClose,onLogRun,onComplete}){
           ))}
         </div>
         <div style={{display:"flex",flexDirection:"column",gap:10,width:"100%",maxWidth:300,marginTop:16}}>
-          <button onClick={stopSprint} style={{width:"100%",padding:"13px",borderRadius:10,border:"none",background:LIME,color:"#000",fontWeight:900,fontSize:15,cursor:"pointer",fontFamily:"inherit"}}>↺ Run Again</button>
-          <button onClick={onClose} style={{width:"100%",padding:"12px",borderRadius:10,border:`1px solid ${BORDER}`,background:"transparent",color:MUTED,fontSize:13,cursor:"pointer",fontFamily:"inherit"}}>← Back to Sprints</button>
+          <button onClick={onClose} style={{width:"100%",padding:"16px",borderRadius:12,border:"none",background:LIME,color:"#000",fontWeight:900,fontSize:16,cursor:"pointer",fontFamily:"inherit",letterSpacing:-0.5}}>← Back Home</button>
+          <button onClick={stopSprint} style={{width:"100%",padding:"10px",borderRadius:10,border:`1px solid ${BORDER}`,background:"transparent",color:"#555",fontSize:12,cursor:"pointer",fontFamily:"inherit",fontWeight:500}}>↺ Run Again</button>
         </div>
       </div>
     );
@@ -996,11 +1064,16 @@ function SprintRunner({sprint,onClose,onLogRun,onComplete}){
           )}
           {phase==="running"&&(
             <>
-              <button onClick={prevTask} disabled={dispIdx===0||transitioning} style={{width:60,height:60,borderRadius:"50%",border:`1px solid ${BORDER}`,background:CARD2,color:dispIdx===0||transitioning?BORDER:MUTED,cursor:dispIdx===0||transitioning?"default":"pointer",fontSize:20,display:"flex",alignItems:"center",justifyContent:"center"}}>◀</button>
-              <button onClick={togglePause} disabled={transitioning} style={{width:80,height:80,borderRadius:"50%",border:"none",background:transitioning?"#2a2a2a":LIME,color:"#000",fontSize:30,cursor:transitioning?"default":"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:900}}>
+              <button onClick={prevTask} disabled={dispIdx===0||transitioning} style={{width:52,height:52,borderRadius:"50%",border:`1px solid ${BORDER}`,background:CARD2,color:dispIdx===0||transitioning?BORDER:MUTED,cursor:dispIdx===0||transitioning?"default":"pointer",fontSize:18,display:"flex",alignItems:"center",justifyContent:"center"}}>◀</button>
+              <button onClick={togglePause} disabled={transitioning} style={{width:76,height:76,borderRadius:"50%",border:"none",background:transitioning?"#2a2a2a":LIME,color:"#000",fontSize:28,cursor:transitioning?"default":"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:900}}>
                 {isRunning?"⏸":"▶"}
               </button>
-              <button onClick={skipTask} disabled={transitioning} style={{width:60,height:60,borderRadius:"50%",border:`1px solid ${BORDER}`,background:CARD2,color:transitioning?BORDER:MUTED,cursor:transitioning?"default":"pointer",fontSize:20,display:"flex",alignItems:"center",justifyContent:"center"}}>▶▶</button>
+              <button onClick={didTask} disabled={transitioning} title="Already did this"
+                style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:2,width:52,height:52,borderRadius:12,border:`1px solid ${GREEN}55`,background:transitioning?"transparent":"#091409",color:transitioning?BORDER:GREEN,cursor:transitioning?"default":"pointer",fontSize:18,fontWeight:900}}>
+                ✅
+                <span style={{fontSize:8,letterSpacing:.5,color:transitioning?BORDER:GREEN,fontWeight:700}}>DID</span>
+              </button>
+              <button onClick={skipTask} disabled={transitioning} style={{width:52,height:52,borderRadius:"50%",border:`1px solid ${BORDER}`,background:CARD2,color:transitioning?BORDER:MUTED,cursor:transitioning?"default":"pointer",fontSize:18,display:"flex",alignItems:"center",justifyContent:"center"}}>▶▶</button>
             </>
           )}
         </div>
@@ -1090,9 +1163,9 @@ function App(){
   const saveSprint=async data=>{
     const uid=user?.id;if(!uid)return;
     if(data.id){
-      await db.from("sprints_v2").update({name:data.name,emoji:data.emoji,scheduled_time:data.scheduled_time,frequency:data.frequency??1,tasks:data.tasks}).eq("id",data.id).eq("user_id",uid);
+      await db.from("sprints_v2").update({name:data.name,emoji:data.emoji,scheduled_time:data.scheduled_time,frequency:data.frequency??1,frequency_days:data.frequency_days||null,tasks:data.tasks}).eq("id",data.id).eq("user_id",uid);
     }else{
-      await db.from("sprints_v2").insert({user_id:uid,name:data.name,emoji:data.emoji,scheduled_time:data.scheduled_time||null,frequency:data.frequency??1,tasks:data.tasks||[]});
+      await db.from("sprints_v2").insert({user_id:uid,name:data.name,emoji:data.emoji,scheduled_time:data.scheduled_time||null,frequency:data.frequency??1,frequency_days:data.frequency_days||null,tasks:data.tasks||[]});
     }
     await loadSprints(user);setEditTarget(undefined);setScreen("list");
   };
@@ -1110,7 +1183,7 @@ function App(){
   };
 
   const handleDuplicate=async sp=>{
-    await db.from("sprints_v2").insert({user_id:user.id,name:`${sp.name} (copy)`,emoji:sp.emoji,scheduled_time:sp.scheduled_time||null,tasks:(sp.tasks||[]).map(t=>({...t,id:genId()}))});
+    await db.from("sprints_v2").insert({user_id:user.id,name:`${sp.name} (copy)`,emoji:sp.emoji,scheduled_time:sp.scheduled_time||null,frequency:sp.frequency??1,frequency_days:sp.frequency_days||null,tasks:(sp.tasks||[]).map(t=>({...t,id:genId()}))});
     await loadSprints(user);
   };
 
@@ -1170,10 +1243,11 @@ function App(){
         onToggleDone={(id,done)=>saveDailyState(id,{done})}
       />
       {previewTarget&&(
-        <SprintPreview sprint={previewTarget} settings={settings}
+        <SprintDetail sprint={previewTarget} settings={settings}
           onClose={()=>setPreviewTarget(null)}
           onRun={sp=>{setPreviewTarget(null);setRunTarget(sp);setScreen("run");}}
           onEdit={sp=>{setPreviewTarget(null);setEditTarget(sp);setScreen("edit");}}
+          onDuplicate={sp=>{setPreviewTarget(null);handleDuplicate(sp);}}
           onSaveSkipped={(id,ids)=>saveDailyState(id,{skipped:ids})}
         />
       )}
