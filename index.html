@@ -59,6 +59,16 @@ input,textarea,select{font-size:16px!important;color-scheme:dark}
 .pulse{animation:pulse 1s ease-in-out infinite}
 @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 .fade-in{animation:fadeIn .2s ease-out}
+@media(min-width:640px){
+  body{display:flex;justify-content:center;background:#0a0a0a}
+  #root{max-width:680px;width:100%;border-left:1px solid #1a1a1a;border-right:1px solid #1a1a1a}
+}
+@media(min-width:680px){
+  .sp-card-title{font-size:16px!important}
+  .sp-card-time{font-size:26px!important}
+  .sp-section-label{font-size:12px!important}
+  .sp-run-btn{padding:9px 18px!important;font-size:14px!important}
+}
 </style>
 </head>
 <body>
@@ -360,7 +370,7 @@ function InstallBanner({onDismiss}){
 }
 
 /* ── Sprint Detail (full page, tap card to open) ── */
-function SprintDetail({sprint,settings,onClose,onRun,onEdit,onDuplicate,onSaveSkipped}){
+function SprintDetail({sprint,settings,isDone,onClose,onRun,onEdit,onDuplicate,onSaveSkipped,onToggleDone}){
   const resetHour=settings.resetHour??4;
   const tasks=sprint.tasks||[];
   const [skipped,setSkipped]=useState(()=>new Set(resolveDS(sprint.daily_state,resetHour).skipped||[]));
@@ -379,10 +389,9 @@ function SprintDetail({sprint,settings,onClose,onRun,onEdit,onDuplicate,onSaveSk
     :(sprint.frequency&&sprint.frequency>1)?`Every ${sprint.frequency}d`:'Daily';
   return(
     <div style={{position:"fixed",inset:0,background:"#000",zIndex:500,display:"flex",flexDirection:"column"}}>
-      {/* Header */}
+      {/* Header — no back button here anymore */}
       <div style={{padding:"14px 16px 12px",borderBottom:`1px solid ${BORDER}`,flexShrink:0}}>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
-          <button onClick={onClose} style={{background:"none",border:"none",color:MUTED,fontSize:26,cursor:"pointer",lineHeight:1,padding:"0 4px",marginLeft:-4}}>‹</button>
           <span style={{fontSize:24,flexShrink:0}}>{sprint.emoji||"⚡"}</span>
           <div style={{flex:1,minWidth:0}}>
             <div style={{fontWeight:900,fontSize:16,color:TEXT,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{sprint.name}</div>
@@ -392,9 +401,10 @@ function SprintDetail({sprint,settings,onClose,onRun,onEdit,onDuplicate,onSaveSk
                 :<span>{tasks.length} tasks · {fmtSecs(totalSecs(tasks))}</span>}
             </div>
           </div>
+          {sprint.scheduled_time&&<span style={{fontSize:18,color:ORANGE,fontWeight:900,letterSpacing:-0.5,flexShrink:0}}>{fmtTime12(sprint.scheduled_time)}</span>}
         </div>
-        {/* Action buttons row */}
-        <div style={{display:"flex",gap:7,alignItems:"center"}}>
+        {/* Action buttons */}
+        <div style={{display:"flex",gap:7,alignItems:"center",flexWrap:"wrap"}}>
           <button onClick={()=>onEdit(sprint)}
             style={{display:"flex",alignItems:"center",gap:5,padding:"7px 14px",borderRadius:8,border:`1px solid ${BORDER}`,background:"transparent",color:TEXT,fontSize:13,cursor:"pointer",fontFamily:"inherit",fontWeight:600}}>
             ✏️ <span>Edit</span>
@@ -410,8 +420,7 @@ function SprintDetail({sprint,settings,onClose,onRun,onEdit,onDuplicate,onSaveSk
             </button>
           )}
           <div style={{flex:1}}/>
-          {sprint.scheduled_time&&<span style={{fontSize:11,color:ORANGE,fontWeight:700}}>{fmtTime12(sprint.scheduled_time)}</span>}
-          <span style={{fontSize:11,color:MUTED,background:INSET,border:`1px solid ${BORDER}`,borderRadius:6,padding:"3px 8px"}}>{freqLabel}</span>
+          <span style={{fontSize:11,color:MUTED,background:INSET,border:`1px solid ${BORDER}`,borderRadius:6,padding:"3px 8px",flexShrink:0}}>{freqLabel}</span>
         </div>
       </div>
 
@@ -437,16 +446,39 @@ function SprintDetail({sprint,settings,onClose,onRun,onEdit,onDuplicate,onSaveSk
         })}
       </div>
 
-      {/* Run footer */}
-      <div style={{padding:"10px 16px 32px",borderTop:`1px solid ${BORDER}`,flexShrink:0}}>
+      {/* Footer: Run + Mark Done + back */}
+      <div style={{padding:"10px 16px 32px",borderTop:`1px solid ${BORDER}`,flexShrink:0,display:"flex",flexDirection:"column",gap:8}}>
         <button onClick={()=>onRun({...sprint,tasks:activeTasks})} disabled={activeTasks.length===0}
           style={{width:"100%",padding:"16px",borderRadius:12,border:"none",background:activeTasks.length===0?"#2a2a2a":LIME,color:activeTasks.length===0?MUTED:"#000",fontWeight:900,fontSize:16,cursor:activeTasks.length===0?"default":"pointer",fontFamily:"inherit",letterSpacing:-0.5}}>
           {activeTasks.length===0?"No tasks to run":`▶ Run ${activeTasks.length} Task${activeTasks.length!==1?"s":""} · ${fmtSecs(totalSecs(activeTasks))}`}
         </button>
+        <div style={{display:"flex",gap:8}}>
+          <button onClick={()=>onToggleDone(!isDone)}
+            style={{flex:1,padding:"11px",borderRadius:10,border:`2px solid ${isDone?GREEN:BORDER}`,background:isDone?GREEN+"22":"transparent",color:isDone?GREEN:MUTED,fontWeight:800,fontSize:13,cursor:"pointer",fontFamily:"inherit",transition:"all .2s",display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
+            {isDone?<><span>✓</span><span>DONE TODAY</span></>:<><span>◯</span><span>MARK DONE</span></>}
+          </button>
+          {/* Back arrow bottom right */}
+          <button onClick={onClose}
+            style={{padding:"11px 18px",borderRadius:10,border:`1px solid ${BORDER}`,background:"transparent",color:MUTED,fontSize:18,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",justifyContent:"center"}}>
+            ‹ Back
+          </button>
+        </div>
       </div>
     </div>
   );
 }
+
+/* ── Time section helper ──────────────────────── */
+const getTimeSection=t=>{
+  if(!t)return'NO TIME';
+  const[h]=t.split(':').map(Number);
+  if(h>=4&&h<12)return'MORNING';
+  if(h>=12&&h<18)return'AFTERNOON';
+  if(h>=18&&h<24)return'NIGHT';
+  return'4TH MEAL'; // 0–3
+};
+const SECTION_ORDER=['MORNING','AFTERNOON','NIGHT','4TH MEAL','NO TIME'];
+const SECTION_EMOJI={MORNING:'🌅',AFTERNOON:'☀️',NIGHT:'🌙','4TH MEAL':'🦉','NO TIME':'📋'};
 
 /* ── Sprint List ──────────────────────────────── */
 function SprintList({user,sprints,loading,settings,onRun,onEdit,onCreate,onDuplicate,onDelete,onRefresh,onShowHistory,onShowSettings,onPreview,onToggleDone}){
@@ -466,7 +498,6 @@ function SprintList({user,sprints,loading,settings,onRun,onEdit,onCreate,onDupli
     return next;
   });
 
-  // Always sort by scheduled_time (nulls last), then creation order
   const sorted=useMemo(()=>[...sprints].sort((a,b)=>{
     if(a.scheduled_time&&b.scheduled_time)return a.scheduled_time.localeCompare(b.scheduled_time);
     if(a.scheduled_time)return -1;if(b.scheduled_time)return 1;return 0;
@@ -474,6 +505,17 @@ function SprintList({user,sprints,loading,settings,onRun,onEdit,onCreate,onDupli
 
   const displayed=useMemo(()=>showCompleted?sorted:sorted.filter(s=>!doneMap[s.id]),[sorted,doneMap,showCompleted]);
   const doneCount=sorted.filter(s=>doneMap[s.id]).length;
+
+  // Group into sections
+  const sections=useMemo(()=>{
+    const map={};
+    displayed.forEach(sp=>{
+      const sec=getTimeSection(sp.scheduled_time);
+      if(!map[sec])map[sec]=[];
+      map[sec].push(sp);
+    });
+    return SECTION_ORDER.filter(s=>map[s]?.length).map(s=>({label:s,items:map[s]}));
+  },[displayed]);
 
   return(
     <div style={{height:"100%",display:"flex",flexDirection:"column",background:"#000"}}>
@@ -506,53 +548,59 @@ function SprintList({user,sprints,loading,settings,onRun,onEdit,onCreate,onDupli
             <div style={{fontSize:13,lineHeight:1.6}}>Create a sprint with ordered tasks.<br/>Set a time and check them off throughout the day.</div>
           </div>
         )}
-        {!loading&&displayed.map(sp=>{
-          const done=doneMap[sp.id];
-          return(
-            <div key={sp.id} onClick={()=>onPreview(sp)} style={{background:done?"#0a0f0a":CARD,borderRadius:12,border:`1px solid ${done?GREEN+"33":BORDER}`,padding:"13px 14px",marginBottom:9,transition:"opacity .2s",opacity:done?0.62:1,cursor:"pointer"}}>
-              {/* Time — large and first */}
-              {sp.scheduled_time&&(
-                <div style={{fontSize:22,fontWeight:900,color:done?"#30D158aa":ORANGE,letterSpacing:-0.5,lineHeight:1,marginBottom:5}}>{fmtTime12(sp.scheduled_time)}</div>
-              )}
-              <div style={{display:"flex",alignItems:"center",gap:8}}>
-                <span style={{fontSize:20,flexShrink:0}}>{sp.emoji||"⚡"}</span>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontWeight:800,fontSize:14,color:done?"#30D158aa":TEXT,textDecoration:done?"line-through":"none",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{sp.name}</div>
-                  <div style={{fontSize:11,color:MUTED,marginTop:2,display:"flex",gap:5,flexWrap:"wrap",alignItems:"center"}}>
-                    <span>{(sp.tasks||[]).length} tasks</span>
-                    {totalSecs(sp.tasks)>0&&<><span style={{color:BORDER}}>·</span><span style={{color:ORANGE}}>{fmtSecs(totalSecs(sp.tasks))}</span></>}
-                    {sp.frequency_days
-                      ?<><span style={{color:BORDER}}>·</span><span style={{color:LIME,fontWeight:700,fontSize:10}}>{sp.frequency_days.split(',').map(d=>DAY_LABEL[d]||d).join(' · ')}</span></>
-                      :(sp.frequency&&sp.frequency>1)&&<><span style={{color:BORDER}}>·</span><span style={{color:MUTED}}>every {sp.frequency}d</span></>
-                    }
-                  </div>
-                </div>
-                <div style={{display:"flex",gap:6,flexShrink:0,alignItems:"center"}}>
-                  <button onClick={e=>{e.stopPropagation();onRun(sp);}} style={{padding:"7px 14px",borderRadius:7,border:"none",background:LIME,color:"#000",fontWeight:900,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>▶ Run</button>
-                  {/* Checkoff — right next to Run */}
-                  <button onClick={e=>{e.stopPropagation();onToggleDone(sp.id,!done);}}
-                    style={{width:28,height:28,borderRadius:"50%",flexShrink:0,cursor:"pointer",border:`2px solid ${done?GREEN:BORDER}`,background:done?GREEN:"transparent",display:"flex",alignItems:"center",justifyContent:"center",transition:"all .2s"}}>
-                    {done&&<span style={{color:"#000",fontSize:12,fontWeight:900,lineHeight:1}}>✓</span>}
-                  </button>
-                  <div onClick={e=>e.stopPropagation()}>
-                    <DotMenu items={[
-                      {label:"▶ Run sprint",action:()=>onRun(sp)},
-                      {label:"Edit sprint",action:()=>onEdit(sp)},
-                      {label:"Duplicate sprint",action:()=>onDuplicate(sp)},
-                      "---",
-                      {label:done?"Unmark done":"Mark done today",action:()=>onToggleDone(sp.id,!done)},
-                      "---",
-                      {label:"Delete sprint",danger:true,action:()=>onDelete(sp.id,sp.name)},
-                    ]}/>
-                  </div>
-                </div>
-              </div>
+        {!loading&&sections.map((sec,si)=>(
+          <div key={sec.label} style={{marginBottom:si<sections.length-1?20:0}}>
+            <div className="sp-section-label" style={{fontSize:10,color:MUTED,letterSpacing:3,fontWeight:800,marginBottom:8,display:"flex",alignItems:"center",gap:6}}>
+              <span>{SECTION_EMOJI[sec.label]}</span><span>{sec.label}</span>
             </div>
-          );
-        })}
+            {sec.items.map(sp=>{
+              const done=doneMap[sp.id];
+              return(
+                <div key={sp.id} onClick={()=>onPreview(sp)} style={{background:done?"#0a0f0a":CARD,borderRadius:12,border:`1px solid ${done?GREEN+"44":BORDER}`,padding:"13px 14px",marginBottom:8,transition:"all .2s",opacity:done?0.7:1,cursor:"pointer"}}>
+                  {sp.scheduled_time&&(
+                    <div className="sp-card-time" style={{fontSize:22,fontWeight:900,color:done?"#30D158aa":ORANGE,letterSpacing:-0.5,lineHeight:1,marginBottom:6}}>{fmtTime12(sp.scheduled_time)}</div>
+                  )}
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{fontSize:20,flexShrink:0}}>{sp.emoji||"⚡"}</span>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div className="sp-card-title" style={{fontWeight:800,fontSize:14,color:done?"#30D158aa":TEXT,textDecoration:done?"line-through":"none",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{sp.name}</div>
+                      <div style={{fontSize:11,color:MUTED,marginTop:2,display:"flex",gap:5,flexWrap:"wrap",alignItems:"center"}}>
+                        <span>{(sp.tasks||[]).length} tasks</span>
+                        {totalSecs(sp.tasks)>0&&<><span style={{color:BORDER}}>·</span><span style={{color:ORANGE}}>{fmtSecs(totalSecs(sp.tasks))}</span></>}
+                        {sp.frequency_days
+                          ?<><span style={{color:BORDER}}>·</span><span style={{color:LIME,fontWeight:700,fontSize:10}}>{sp.frequency_days.split(',').map(d=>DAY_LABEL[d]||d).join(' · ')}</span></>
+                          :(sp.frequency&&sp.frequency>1)&&<><span style={{color:BORDER}}>·</span><span style={{color:MUTED}}>every {sp.frequency}d</span></>
+                        }
+                      </div>
+                    </div>
+                    <div style={{display:"flex",gap:6,flexShrink:0,alignItems:"center"}}>
+                      <button className="sp-run-btn" onClick={e=>{e.stopPropagation();onRun(sp);}} style={{padding:"7px 14px",borderRadius:7,border:"none",background:LIME,color:"#000",fontWeight:900,fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>▶ Run</button>
+                      {/* DONE! button */}
+                      <button onClick={e=>{e.stopPropagation();onToggleDone(sp.id,!done);}}
+                        style={{padding:"6px 12px",borderRadius:20,border:`2px solid ${done?GREEN:BORDER}`,background:done?GREEN:"transparent",color:done?"#000":MUTED,fontWeight:800,fontSize:11,cursor:"pointer",fontFamily:"inherit",transition:"all .2s",letterSpacing:.5,flexShrink:0}}>
+                        {done?"✓ DONE!":"DONE!"}
+                      </button>
+                      <div onClick={e=>e.stopPropagation()}>
+                        <DotMenu items={[
+                          {label:"▶ Run sprint",action:()=>onRun(sp)},
+                          {label:"Edit sprint",action:()=>onEdit(sp)},
+                          {label:"Duplicate sprint",action:()=>onDuplicate(sp)},
+                          "---",
+                          {label:done?"Unmark done":"Mark done today",action:()=>onToggleDone(sp.id,!done)},
+                          "---",
+                          {label:"Delete sprint",danger:true,action:()=>onDelete(sp.id,sp.name)},
+                        ]}/>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ))}
       </div>
 
-      {/* Footer: toggle + new button */}
+      {/* Footer */}
       <div style={{padding:"10px 16px 22px",borderTop:`1px solid ${BORDER}`,flexShrink:0,display:"flex",flexDirection:"column",gap:8}}>
         {doneCount>0&&(
           <button onClick={toggleShowCompleted}
@@ -985,19 +1033,36 @@ function SprintRunner({sprint,onClose,onLogRun,onComplete}){
 
   if(phase==="done"){
     return(
-      <div style={{height:"100%",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:"#000",gap:16,padding:32,textAlign:"center"}}>
-        <div style={{fontSize:60,marginBottom:8}}>🎉</div>
-        <div style={{fontSize:32,fontWeight:900,color:LIME,letterSpacing:-2}}>SPRINT COMPLETE</div>
-        <div style={{fontSize:16,color:MUTED}}>{sprint.emoji||"⚡"} {sprint.name}</div>
-        <div style={{display:"flex",gap:12,marginTop:8,flexWrap:"wrap",justifyContent:"center"}}>
-          {[["TASKS",tasks.length,TEXT],["ELAPSED",fmtSecs(T.current.elapsed),LIME],["PLANNED",fmtSecs(totalSecs(tasks)),ORANGE]].map(([label,val,col])=>(
-            <div key={label} style={{background:CARD,borderRadius:10,border:`1px solid ${BORDER}`,padding:"12px 18px"}}>
-              <div style={{fontSize:10,color:MUTED,letterSpacing:2,marginBottom:4}}>{label}</div>
-              <div style={{fontSize:22,fontWeight:900,color:col}}>{val}</div>
-            </div>
-          ))}
+      <div style={{height:"100%",display:"flex",flexDirection:"column",background:"#000"}}>
+        <div style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",alignItems:"center",padding:"36px 24px 16px",gap:14,textAlign:"center"}}>
+          <div style={{fontSize:56}}>🎉</div>
+          <div style={{fontSize:30,fontWeight:900,color:LIME,letterSpacing:-2}}>SPRINT COMPLETE</div>
+          <div style={{fontSize:15,color:MUTED}}>{sprint.emoji||"⚡"} {sprint.name}</div>
+          <div style={{display:"flex",gap:10,flexWrap:"wrap",justifyContent:"center",marginTop:4}}>
+            {[["TASKS",tasks.length,TEXT],["ELAPSED",fmtSecs(T.current.elapsed),LIME],["PLANNED",fmtSecs(totalSecs(tasks)),ORANGE]].map(([label,val,col])=>(
+              <div key={label} style={{background:CARD,borderRadius:10,border:`1px solid ${BORDER}`,padding:"10px 16px"}}>
+                <div style={{fontSize:10,color:MUTED,letterSpacing:2,marginBottom:4}}>{label}</div>
+                <div style={{fontSize:20,fontWeight:900,color:col}}>{val}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* All completed tasks */}
+          <div style={{width:"100%",maxWidth:440,marginTop:8,textAlign:"left"}}>
+            <div style={{fontSize:10,color:MUTED,letterSpacing:2,fontWeight:700,marginBottom:10}}>COMPLETED TASKS</div>
+            {tasks.map((t,i)=>(
+              <div key={t.id||i} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",borderRadius:10,background:"#091409",border:"1px solid #30D15822",marginBottom:5}}>
+                <div style={{width:20,height:20,borderRadius:"50%",background:GREEN,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center"}}>
+                  <span style={{color:"#000",fontSize:10,fontWeight:900,lineHeight:1}}>✓</span>
+                </div>
+                <span style={{flex:1,fontSize:13,color:"#30D158cc",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontWeight:600}}>{t.title}</span>
+                <span style={{fontSize:10,color:"#30D15866",flexShrink:0,fontVariantNumeric:"tabular-nums"}}>{fmtSecs(t.seconds||0)}</span>
+              </div>
+            ))}
+          </div>
         </div>
-        <div style={{display:"flex",flexDirection:"column",gap:10,width:"100%",maxWidth:300,marginTop:16}}>
+
+        <div style={{padding:"10px 24px 32px",borderTop:`1px solid ${BORDER}`,flexShrink:0,display:"flex",flexDirection:"column",gap:10}}>
           <button onClick={onClose} style={{width:"100%",padding:"16px",borderRadius:12,border:"none",background:LIME,color:"#000",fontWeight:900,fontSize:16,cursor:"pointer",fontFamily:"inherit",letterSpacing:-0.5}}>← Back Home</button>
           <button onClick={stopSprint} style={{width:"100%",padding:"10px",borderRadius:10,border:`1px solid ${BORDER}`,background:"transparent",color:"#555",fontSize:12,cursor:"pointer",fontFamily:"inherit",fontWeight:500}}>↺ Run Again</button>
         </div>
@@ -1269,11 +1334,13 @@ function App(){
       />
       {previewTarget&&(
         <SprintDetail sprint={previewTarget} settings={settings}
+          isDone={!!resolveDS(previewTarget.daily_state,settings.resetHour??4).done}
           onClose={()=>setPreviewTarget(null)}
           onRun={sp=>{setPreviewTarget(null);setRunTarget(sp);setScreen("run");}}
           onEdit={sp=>{setPreviewTarget(null);setEditTarget(sp);setScreen("edit");}}
           onDuplicate={sp=>{setPreviewTarget(null);handleDuplicate(sp);}}
           onSaveSkipped={(id,ids)=>saveDailyState(id,{skipped:ids})}
+          onToggleDone={done=>saveDailyState(previewTarget.id,{done})}
         />
       )}
       {showHistory&&<HistoryPanel user={user} onClose={()=>setShowHistory(false)}/>}
